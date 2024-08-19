@@ -1,0 +1,35 @@
+{
+  "name": "proof-machine",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "npx tsc",
+    "predebug": "npm run build",
+    "debug": "node inspect dist/buildTree.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "bin": {
+    "buildTree": "dist/cli/buildTree.js",
+    "batchProof": "dist/cli/batchProof.js",
+    "testProof": "dist/cli/testProof.js",
+    "import": "dist/cli/import.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.9.0",
+    "arg": "^5.0.2",
+    "eslint": "^9.9.0",
+    "globals": "^15.9.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.1.0"
+  },
+  "dependencies": {
+    "@ton/core": "^0.56.3",
+    "@types/cli-progress": "^3.11.6",
+    "@types/node": "^22.4.0",
+    "cli-progress": "^3.12.0",
+    "sqlite3": "^5.1.7"
+  }
+}
