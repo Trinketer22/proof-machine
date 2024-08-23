@@ -1,6 +1,6 @@
+#!/usr/bin/env node
 import sqlite3 from 'sqlite3';
 import arg from 'arg';
-import {ReadStream, createReadStream} from 'node:fs';
 import {open, FileHandle} from 'node:fs/promises';
 import { Address } from '@ton/core';
 
@@ -26,11 +26,23 @@ async function create_table() {
     await runQuery("CREATE TABLE `tops` (`prefix` TEXT, `boc` TEXT, UNIQUE(`prefix`) ON CONFLICT IGNORE)");
 }
 
+function help() {
+    console.log("Import airdrop csv data into database");
+    console.log(`${__filename} <csv_path> <database_path>`);
+}
+
 async function run() {
     const args = arg({});
 
-    if(args._.length < 2) {
-        throw new Error("Path to import csv is required")
+    if(args._.length == 0) {
+        console.log("Path to import csv is required");
+        help();
+        return;
+    }
+    if(args._.length == 1) {
+        console.log("Path to database is required");
+        help();
+        return;
     }
 
     importFile = await open(args._[0], 'r');
