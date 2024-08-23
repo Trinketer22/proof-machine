@@ -3,7 +3,7 @@ import { MessagePort, parentPort } from 'node:worker_threads';
 import { PfxCluster, PfxData, StorageSqlite } from "./BranchStorage";
 import { bigIntFromBuffer, clearFirstBits, clearN, convertToMerkleProof, convertToPrunedBranch, extractBits, findNextFork, findNextForkLarge, getN, joinSuffixes } from './util';
 import { Address, beginCell, Cell } from '@ton/core';
-import { forceFork, generateMerkleProof, storeLabel } from './Dictionary';
+import { forceFork, generateMerkleProof, readAllPrefixes, storeLabel } from './Dictionary';
 
 export type EdgeNormal = {
     type: 'normal',
@@ -206,7 +206,7 @@ export class NodeProcessor extends events.EventEmitter {
                 console.log("Merging...");
                 if(this.storage) {
                     await this.storage.saveBranchCache();
-                    await this.storage.clearPathCache();
+                    await this.storage.clearTopCache();
                     await this.storage.updatePath(resLevel.map(r => Number(r.pfx)), resLevel[0].len, paths);
                 }
                 else if(this.parentPort) {
@@ -267,7 +267,9 @@ export class NodeProcessor extends events.EventEmitter {
 
             for(let i = 0; i < pfx.keys.length; i++) {
                 const nextSfx = clearN(pfx.keys[i], next32, true);
-                pfx.data[i].path.push(nextLen)
+                if(nextLen < this.store_depth) {
+                    pfx.data[i].path.push(nextLen)
+                }
                 // Right 
                 if(getN(pfx.keys[i], next32, true) & 1) {
                     rightKeys.push(nextSfx);
@@ -307,21 +309,6 @@ export class NodeProcessor extends events.EventEmitter {
             */
             if(pfx.keys.length != 1 || pfx.data.length != 1) {
                 throw new Error("Something went wrong!");
-            }
-            if(opts.save_path) {
-                if(this.storage) {
-                    await this.storage.savePath(fullPfx, pfx.data[0].path);
-                }
-                else if(this.parentPort) {
-                    this.parentPort.postMessage({
-                        type: 'save_path',
-                        pfx: fullPfx,
-                        path: pfx.data[0].path
-                    })
-                }
-                else {
-                    throw new Error("Invalid instance");
-                }
             }
             node.storeSlice(this.packData(pfx.data[0].value).asSlice());
         }
@@ -372,7 +359,7 @@ export class NodeProcessor extends events.EventEmitter {
         }
         return res;
     }
-    protected async buildProofInternal(shortPfx: number, fullPfx: Buffer, prevFork: number, amount: bigint, path: string[]) {
+    protected async buildProofInternal(shortPfx: number, fullPfx: Buffer, prevFork: number, path: string[], top: Cell) {
         const fork: Cell[] = new Array(2);
         let   curPfx: number | bigint;
         let   siblingPfx: number | bigint;
@@ -401,37 +388,36 @@ export class NodeProcessor extends events.EventEmitter {
         // console.log("Sibling pfx:", siblingPfx);
         // console.log("Leaf:", leaf);
         if(path.length > 0) {
-            if(Number(path[0]) < this.store_depth) {
-                fork[isRight]     = (await this.buildProofInternal(shortPfx, fullPfx, nextFork, amount, path)).cell;
-                fork[isRight ^ 1] = await this.processPfxCached(siblingPfx, nextFork);
-                // console.log("Next:", nextFork);
-                // console.log("Cur pfx:", curPfx);
-                // console.log("Is right:", isRight);
-                // console.log(`Pfx len:${nextFork}:${fork[isRight ^ 1]}`);
-            }
-            else {
-                // console.log("Next fork:", nextFork);
-                // console.log("Cur pfx:", curPfx);
-                // console.log("isRight:", isRight);
-                fork[isRight]= Cell.fromBase64(await this.storage.getTop(curPfx, nextFork));
-                const pruned = await this.processPfxCached(siblingPfx, nextFork);
-                // console.log("Pruned picked:", pruned);
-                const proofKey = BigInt('0x' + fullPfx.toString('hex'));
-                // console.log("Proof key:", proofKey.toString(16));
-                const myProof = generateMerkleProof(fork[isRight], curPfx, nextFork, [proofKey], keyLeft);
-
-                // console.log("My proof:", myProof.hash(0));
-                // console.log("My top:", fork[isRight].hash(0));
-                fork[isRight]     = myProof;
-                fork[isRight ^ 1] = convertToPrunedBranch(pruned.hash(0), pruned.depth(0));
-            }
+            fork[isRight]     = (await this.buildProofInternal(shortPfx, fullPfx, nextFork, path, top)).cell;
+            fork[isRight ^ 1] = await this.processPfxCached(siblingPfx, nextFork);
+            // console.log("Next:", nextFork);
+            // console.log("Cur pfx:", curPfx);
+            // console.log("Is right:", isRight);
+            // console.log(`Pfx len:${nextFork}:${fork[isRight ^ 1]}`);
         }
         else {
+            // console.log("Next fork:", nextFork);
+            // console.log("Cur pfx:", curPfx);
+            // console.log("isRight:", isRight);
+            fork[isRight] = top; // Cell.fromBase64(await this.storage.getTop(curPfx, nextFork));
+            const pruned  = await this.processPfxCached(siblingPfx, nextFork);
+            // console.log("Pruned picked:", pruned);
+            const proofKey = BigInt('0x' + fullPfx.toString('hex'));
+            // console.log("Proof key:", proofKey.toString(16));
+            const myProof = generateMerkleProof(fork[isRight], curPfx, nextFork, [proofKey], keyLeft);
+
+            // console.log("My proof:", myProof.hash(0));
+            // console.log("My top:", fork[isRight].hash(0));
+            fork[isRight]     = myProof;
+            fork[isRight ^ 1] = convertToPrunedBranch(pruned.hash(0), pruned.depth(0));
+
+            /*
             const finalLeaf = extractBits(fullPfx, nextFork, this.maxLen - nextFork);
             fork[isRight] = beginCell().store(
                 storeLabel(finalLeaf, this.maxLen - nextFork, this.maxLen - nextFork)
             ).storeSlice(this.packData(amount).asSlice()).endCell();
             fork[isRight ^ 1] = await this.processPfxCached(siblingPfx, nextFork);
+            */
         }
         // console.log("Left:",  fork[0].hash(0));
         // console.log("Right:", fork[1].hash(0));
@@ -451,20 +437,23 @@ export class NodeProcessor extends events.EventEmitter {
         const fullPfx = address.hash;
         const shortPfx  = fullPfx.readUintBE(0, 4);
         const proofPath = await this.storage.getPath(address.toRawString())
+        console.log("Proof path:", proofPath);
+
         if(!proofPath) {
             throw new Error("Path is not found for:" + fullPfx.toString());
         }
+
         const forkIdxs  = proofPath.path.split(',');
         if(forkIdxs.length == 0) {
             throw new Error("Path is not empty for:" + fullPfx.toString());
         }
 
-        const proof = await this.buildProofInternal(shortPfx, fullPfx, 0, proofPath.amount, forkIdxs);
+        const proof = await this.buildProofInternal(shortPfx, fullPfx, 0, forkIdxs, Cell.fromBase64(proofPath.boc));
 
         return convertToMerkleProof(forceFork(0b100 << 8, 11, 267, proof.l, proof.r));
     }
     
-    async buildProofFromTop(pfx: number, pfxLength: number, top: Cell) {
+    async buildProofFromTop(pfx: number, pfxLength: number, top: Cell, paths: number[]) {
 
         if(!this.root_hash) {
             throw new Error("Root hash is required for buildProofFromTop operation");
@@ -489,7 +478,8 @@ export class NodeProcessor extends events.EventEmitter {
         // console.log("Sibling pfx:", siblingPfx);
 
         const pruned    = this.processPfxCached(siblingPfx, pfxLength);
-        const addresses = await this.storage.getPathForPrefix(pfx, pfxLength);//readAllPrefixes(top, pfx, pfxLength, this.maxLen - pfxLength);
+        const suffixLen = this.maxLen - pfxLength;
+        const addresses = readAllPrefixes(top, pfx, pfxLength, suffixLen).map(p => joinSuffixes(pfx, [suffixLen, p]));
 
         const   fork: Cell[] = new Array(2);
         let   curPfx: number | bigint;
@@ -497,17 +487,17 @@ export class NodeProcessor extends events.EventEmitter {
 
         for(const address of addresses) {
             // console.log("NEXT");
-            const proofKey = BigInt('0x' + address.address);
+            const proofKey = address;
             // console.log("Key:",proofKey.toString(16));
             const proof = generateMerkleProof(top, pfx, pfxLength, [proofKey], this.maxLen - pfxLength);
             // console.log("My proof:", proof.hash(0));
             // console.log("My top:", top.hash(0));
-            const fullPfx  = Buffer.from(address.address, 'hex');
+            const fullPfx  = Buffer.from(address.toString(16).padStart(64, '0'), 'hex');
             const shortPfx = fullPfx.readUintBE(0, 4);
             fork[isRightInit]     = proof;
             fork[isRightInit ^ 1] = await pruned;
             // console.log("Pruned picked:", fork[isRight ^ 1]);
-            const paths    = address.path.split(',').map(p => Number(p)).filter(p => p <= pfxLength);
+            // const paths    = address.path.split(',').map(p => Number(p)).filter(p => p <= pfxLength);
             let   total    = paths.length - 1;
             let   prevFork = paths[total];
             let   totalLen = 0;
@@ -699,7 +689,7 @@ export class NodeProcessor extends events.EventEmitter {
             try {
             const sfxMatch = findNextForkLarge(sfxs);
             const keyLeft  = (32 - (pfx.len % 32)) % 32;
-            const   forkLen  = keyLeft + sfxMatch.pos;
+            const forkLen  = keyLeft + sfxMatch.pos;
             const hasMatch = sfxMatch.pos > 0;
 
             const nextLabel = joinSuffixes(pfx.keys[0], [sfxMatch.pos, sfxMatch.pfx]);
@@ -748,7 +738,11 @@ export class NodeProcessor extends events.EventEmitter {
         if(opts.save_path && pfx.len < this.store_depth) {
             if(expectTop) {
                 if(this.storage) {
-                    await this.storage.saveTop(pfx.pfx, pfx.len, resCell.toBoc().toString('base64'));
+                    const suffixLen = this.maxLen - pfx.len;
+                    const addresses = readAllPrefixes(resCell, pfx.pfx, pfx.len, suffixLen).map(
+                        p => '0:' + joinSuffixes(pfx.pfx, [suffixLen, p]).toString(16).padStart(64,'0')
+                    );
+                    await this.storage.saveTop(pfx.pfx, pfx.len, pfx.data[0].path.join(','), resCell.toBoc().toString('base64'), addresses);
                 } else if(this.parentPort) {
                     this.parentPort.postMessage({
                         type: 'save_top',

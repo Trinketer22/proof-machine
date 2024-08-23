@@ -313,7 +313,7 @@ export function convertToMerkleProof(c: Cell): Cell {
         .endCell({ exotic: true });
 }
 
-export function joinSuffixes(pfx: number | bigint, ...suffixes:[number | bigint, number | bigint][]) {
+export function joinSuffixes(pfx: number | bigint, ...suffixes:[number, number | bigint][]) {
     let res = BigInt(pfx);
 
     for(const suffix of suffixes) {
