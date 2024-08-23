@@ -222,7 +222,7 @@ async function run () {
                             return;
                         }
                         for(const top of topBatch) {
-                            const proofs = await processor.buildProofFromTop(top.prefix, top.length, Cell.fromBase64(top.boc));
+                            const proofs = await processor.buildProofFromTop(top.prefix, top.length, Cell.fromBase64(top.boc), top.path.split(',').map(p => Number(p)));
                             parentPort!.postMessage({
                                 type: 'top',
                                 value: proofs

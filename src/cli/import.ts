@@ -21,9 +21,9 @@ async function create_table() {
     await runQuery("DROP TABLE IF EXISTS `airdrop`");
     await runQuery("DROP TABLE IF EXISTS `branches`");
     await runQuery("DROP TABLE IF EXISTS `tops`");
-    await runQuery("CREATE TABLE `airdrop` (`address` TEXT, `amount` BIGINT, `key` INTEGER, `path` DEFAULT '', UNIQUE(`address`) ON CONFLICT ROLLBACK)");
+    await runQuery("CREATE TABLE `airdrop` (`address` TEXT, `amount` BIGINT, `key` INTEGER, `top_idx` INTEGER DEFAULT -1, UNIQUE(`address`) ON CONFLICT ROLLBACK)");
     await runQuery("CREATE TABLE `branches` (`prefix` TEXT, `depth` INTEGER, `hash` TEXT, UNIQUE(`prefix`) ON CONFLICT IGNORE)");
-    await runQuery("CREATE TABLE `tops` (`prefix` TEXT, `boc` TEXT, UNIQUE(`prefix`) ON CONFLICT IGNORE)");
+    await runQuery("CREATE TABLE `tops` (`prefix` INTEGER, `boc` TEXT, `path` TEXT DEFAULT '', UNIQUE(`prefix`) ON CONFLICT REPLACE)");
 }
 
 function help() {

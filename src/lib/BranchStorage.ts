@@ -22,12 +22,7 @@ type CacheTimer = {
 export class StorageSqlite {
     protected db: sqlite3.Database;
     protected rootCache:Map<string, boolean>;
-    protected branchFile: FileHandle | undefined;
-    protected pathQueue: {
-        count: number,
-        map: Map<string, string[]>;
-    };
-    protected pathCacheLocked: boolean;
+
     protected pathTimeout: CacheTimer | undefined;
     protected branchTimeout: CacheTimer | undefined;
     protected topTimeout: CacheTimer | undefined;
@@ -39,16 +34,16 @@ export class StorageSqlite {
     }[];
     protected topCacheLocked: boolean
     protected topCache: {
-        pfx: string,
-        boc: string
+        pfx: number,
+        boc: string,
+        path: string,
+        addresses: string[]
     }[]
 
     constructor(path: string) {
         this.db = new sqlite3.Database(path);
         this.rootCache = new Map<string, boolean> ();
-        this.pathCacheLocked = false;
         this.branchCacheLocked = false;
-        this.pathQueue = {count: 0, map: new Map()};
         this.branchCache = [];
         this.topCache    = [];
         this.topCacheLocked = false;
@@ -256,13 +251,11 @@ export class StorageSqlite {
         });
     }
     updatePath(pfxs: number[], pfxLen: number, path: number[]) {
-        const shift  = 32 - pfxLen;
         console.log("PfxLen:", pfxLen);
-        console.log("Shift:", shift);
         console.log("PFXS:", pfxs);
-        const concat = "UPDATE `airdrop` SET `path` = concat_ws(',', ?, `path`) WHERE `key` >> ? IN(" + new Array(pfxs.length).fill('?').join(',') + ')';
+        const concat = "UPDATE `tops` SET `path` = concat_ws(',', ?, `path`) WHERE (`prefix` >> ((`prefix` & 31) - ? + 5)) IN(" + new Array(pfxs.length).fill('?').join(',') + ')';
         return new Promise((resolve, reject) => {
-            this.db.run(concat, [path.join(','), shift, ...pfxs], (err) => {
+            this.db.run(concat, [path.join(','), pfxLen, ...pfxs], (err) => {
                 if(err) {
                     reject(err);
                 }
@@ -272,89 +265,34 @@ export class StorageSqlite {
             });
         });
     }
-    clearPathCache() {
-        this.pathCacheLocked = true;
-        if(this.pathTimeout && !this.pathTimeout.cleared) {
-            clearTimeout(this.pathTimeout.timeout);
-            this.pathTimeout.cleared = true;
-        }
-        const queries: Promise<unknown>[] = [];
-        for(const path of this.pathQueue.map.keys()) {
-            const batch = this.pathQueue.map.get(path)!;
-            queries.push(this.savePathInternal(path, batch));
-        }
-        return Promise.all(queries).then(v => this.pathCacheLocked = false);
-    }
-    protected savePathInternal(path: string, pfxs: string[]) {
-        const placeholders = new Array(pfxs.length).fill('?').join(',');
-        this.pathQueue.map.delete(path);
-        this.pathQueue.count--;
-        return new Promise((resolve, reject) => {
-            const query  = 'UPDATE `airdrop` SET `path` = ? WHERE `address` IN (' + placeholders + ')';
-            // console.log("Query:",query);
-            this.db.run(query, [path, ...pfxs], (err) => {
-                if(err) {
-                    reject(err);
-                }
-                else {
-                    resolve(true);
-                }
-            }); 
-        });
-    }
-    savePath(pfx: string, path: number[]) {
-        if(this.pathTimeout && !this.pathTimeout.cleared) {
-            clearTimeout(this.pathTimeout.timeout);
-            this.pathTimeout.cleared = true;
-        }
-        const pathStr = path.join(',');
 
-        const addrBefore = this.pathQueue.map.get(pathStr);
-        if(addrBefore) {
-            addrBefore.push(pfx)
-        }
-        else {
-            this.pathQueue.map.set(pathStr, [pfx]);
-        }
-        this.pathQueue.count++;
-
-        if(this.pathQueue.count >= 1024 && !this.pathCacheLocked) {
-            return this.clearPathCache();
-        }
-        else {
-            this.pathTimeout = {
-                timeout: setTimeout(() =>{
-                if(!this.pathCacheLocked) {
-                    // console.log("Clearing paths by timeout");
-                    this.clearPathCache();
-                }
-                }, 2000),
-                cleared: false
-            }
-        }
-    }
-    protected clearTopCache() {
+    clearTopCache() {
         return new Promise((resolve, reject) => {
             this.topCacheLocked = true;
             let topCount = this.topCache.length;
             if(topCount > 0) {
-                const firstTop = this.topCache.shift()!;
-                const params: unknown[] = [firstTop.pfx, firstTop.boc];
-                let placeholders = '(?, ?)';
-                while(--topCount) {
-                    const nextTop = this.topCache.shift()!;
-                    placeholders += ',(?, ?)';
-                    params.push(nextTop.pfx, nextTop.boc);
-                }
-                const query = "INSERT INTO `tops` (`prefix`, `boc`) VALUES " + placeholders;
-                this.db.run(query, params, (err) => {
-                    if(err) {
-                        reject(err);
+                this.db.serialize(() => {
+                    const params: unknown[] = [];
+                    // const placeholders = Array(topCount).fill('?');
+                    this.db.run("BEGIN");
+                    for(let i = 0; i < topCount; i++) {
+                        const nextTop = this.topCache.shift()!;
+                        // console.log(nextTop);
+                        const query = "INSERT INTO `tops` (`prefix`,`path`,`boc`) VALUES (?,?,?)";
+                        this.db.run(query, [nextTop.pfx, nextTop.path, nextTop.boc]);
+                        this.db.run("UPDATE `airdrop` SET `top_idx` = ? WHERE `address` IN(" + Array(nextTop.addresses.length).fill('?').join(',') + ")",
+                                    [nextTop.pfx, ...nextTop.addresses]
+                                   );
                     }
-                    else {
-                        this.topCacheLocked = false;
-                        resolve(true);
-                    }
+                    this.db.run("COMMIT", (err) => {
+                        if(err) {
+                            reject(err);
+                        }
+                        else {
+                            this.topCacheLocked = false;
+                            resolve(true);
+                        }
+                    });
                 });
             }
             else {
@@ -363,15 +301,26 @@ export class StorageSqlite {
             }
         });
     }
-    saveTop(pfx: number | bigint, length: number, boc: string) {
+    saveTop(pfx: number | bigint, pfxLength: number, path: string, boc: string, addresses: string[]) {
+        if(pfxLength > 27) {
+            throw new RangeError(`Top prefix length ${pfxLength} is out of range 27!`);
+        }
         if(this.topTimeout && !this.topTimeout.cleared) {
             clearTimeout(this.topTimeout.timeout);
             this.topTimeout.cleared = true;
         }
-        const pfxKey = length.toString(16) + ':' + pfx.toString(16);
+        if(path.length == 0) {
+            throw new Error("NO PATH!");
+        }
+
+        const pfxNum  = Number(pfx);
+
+        const pfxKey = pfxNum * (2 ** 5) + pfxLength;//length.toString(16) + ':' + pfx.toString(16);
         this.topCache.push({
             pfx: pfxKey,
-            boc
+            boc,
+            path,
+            addresses
         });
         if(this.topCache.length < 100) {
             this.topTimeout = {
@@ -383,9 +332,13 @@ export class StorageSqlite {
             return this.clearTopCache();
         }
     }
-    getTop(pfx: number | bigint, length: number) {
+    getTop(pfx: number | bigint, pfxLength: number) {
+        if(pfxLength > 27) {
+            throw new RangeError(`Top prefix length ${pfxLength} is out of range 27!`);
+        }
+
         return new Promise((resolve:(boc: string) => void, reject) => {
-            const pfxKey = length.toString(16) + ':' + pfx.toString(16);
+            const pfxKey = Number(pfx) * (2 ** 5) + pfxLength;//length.toString(16) + ':' + pfx.toString(16);
             const query = "SELECT `boc` FROM `tops` WHERE `prefix` = ?";
             this.db.get<{boc: string}>(query, [pfxKey], (err, row) => {
                 if(err) {
@@ -398,20 +351,23 @@ export class StorageSqlite {
         });
     }
     getTopBatch(offset: number, limit: number) {
-        type ResType = {prefix: number, length: number, boc: string};
+        type ResType = {prefix: number, length: number, boc: string, path: string};
         return new Promise((resolve:(top: ResType[]) => void, reject) => {
-            const query = "SELECT `prefix`, `boc` FROM `tops` LIMIT ?,?";
-            this.db.all<{prefix: string, boc: string}>(query, [offset, limit], (err, rows) => {
+            const query = "SELECT `prefix`, `path`, `boc` FROM `tops` LIMIT ?,?";
+            this.db.all<{prefix: number, boc: string, path: string}>(query, [offset, limit], (err, rows) => {
                 if(err) {
                     reject(err);
                 }
                 else {
                     const results = rows.map(r => {
-                        const [length, prefix] = r.prefix.split(':').map(p => Number('0x' + p))
+                        const length = r.prefix & 31;
+                        const prefix = r.prefix >> 5;
+                        //const [length, prefix] = r.prefix.split(':').map(p => Number('0x' + p))
                         return {
                             length,
                             prefix,
-                            boc: r.boc
+                            boc: r.boc,
+                            path: r.path
                         }
                     });
                     resolve(results);
@@ -447,18 +403,15 @@ export class StorageSqlite {
         });
     }
     getPath(address: string) {
-        type ResType = {path: string, amount: string};
-        return new Promise((resolve:(value: {path: string, amount: bigint}) => void, reject) => {
-            const query = "SELECT `path`, `amount` FROM `airdrop` WHERE `address` = ?";
+        type ResType = {path: string, boc: string};
+        return new Promise((resolve:(value: ResType) => void, reject) => {
+            const query = "SELECT `tops`.`path` AS `path`, `tops`.`boc` AS boc FROM `airdrop` JOIN `tops` ON tops.prefix = airdrop.top_idx WHERE `address` = ? ";
             this.db.get<ResType>(query, [address], (err, row) => {
                 if(err) {
                     reject(err);
                 }
                 else {
-                    resolve({
-                        path: row.path,
-                        amount: BigInt(row.amount)
-                    });
+                    resolve(row);
                 }
             });
         });
