@@ -1,4 +1,6 @@
 node_modules
 package-lock.json
+root_hash
 dist
 tests
+*.csv
