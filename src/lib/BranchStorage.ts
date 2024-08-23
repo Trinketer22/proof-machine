@@ -1,7 +1,5 @@
 import sqlite3 from 'sqlite3';
-import {writeFile, FileHandle, open} from 'fs/promises';
 import { bigIntFromBuffer, clearFirstBits, clearN } from './util';
-import { address } from '@ton/core';
 
 export type PfxData = {
     value: bigint,
