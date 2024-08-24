@@ -6,7 +6,8 @@ import {open} from 'node:fs/promises';
 import { Cell } from '@ton/core';
 import cliProgress from 'cli-progress';
 import { availableParallelism } from 'node:os';
-import { Worker, isMainThread, parentPort} from 'node:worker_threads';
+import { Worker, isMainThread, parentPort, workerData} from 'node:worker_threads';
+import { NodeScheduler } from '../lib/NodeScheduler';
 
 type TopProcessed = {
     type: 'top',
@@ -53,12 +54,10 @@ async function run () {
     const storage   = new StorageSqlite(args._[0]);
 
     const processor = new NodeProcessor({
-        type: 'main',
         airdrop_start: 1000,
         airdrop_end: 2000,
         max_parallel: 1,
         root_hash: Buffer.from(args['--root-hash'], 'hex'),
-        storage,
         store_depth: 16,
     });
     
@@ -95,15 +94,18 @@ async function run () {
 
         const perWorker = Math.floor(topBatch.length / parallel);
 
+
         const saveProofs = async (tops: TopProcessed) => {
             processed += tops.value.length;
-            await fh.appendFile(tops.value.map(p => p[0].toString(16) + "," + p[1]).join("\n") + "\n",{encoding: 'utf8'});
+            await fh.appendFile(tops.value.map(p => '0:' + p[0].toString(16) + "," + p[1]).join("\n") + "\n",{encoding: 'utf8'});
             bar.update(processed);
         }
 
         let dataQueue: Worker[] = [];
+
+        const branchMap = await storage.getBranchesMap();
         for(let i = 0; i < parallel; i++) {
-            const w = new Worker(__filename, {argv: process.argv.slice(2)});
+            const w = new Worker(__filename, {argv: process.argv.slice(2), workerData: branchMap});
             const processMsg = async (msg: ThreadRes) => {
                 // console.log(msg.type);
                 msg.worker = w
@@ -211,6 +213,12 @@ async function run () {
     }
     else {
         if(parentPort) {
+            if(workerData) {
+                processor.setBranchMap(workerData);
+            }
+            else {
+                throw new Error("Branch map is required");
+            }
             let keepGoing = true;
             while(keepGoing) {
                 await new Promise((resolve, reject) => {

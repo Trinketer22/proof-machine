@@ -1,9 +1,10 @@
 import events from 'node:events';
-import { MessagePort, parentPort } from 'node:worker_threads';
+import { MessagePort } from 'node:worker_threads';
 import { PfxCluster, PfxData, StorageSqlite } from "./BranchStorage";
 import { bigIntFromBuffer, clearFirstBits, clearN, convertToMerkleProof, convertToPrunedBranch, extractBits, findNextFork, findNextForkLarge, getN, joinSuffixes } from './util';
 import { Address, beginCell, Cell } from '@ton/core';
 import { forceFork, generateMerkleProof, readAllPrefixes, storeLabel } from './Dictionary';
+import { hash } from 'node:crypto';
 
 export type EdgeNormal = {
     type: 'normal',
@@ -24,35 +25,23 @@ export type PfxProcessed = {
     cell: Cell
 }
 
-export type ProcessorConfigGeneral = {
+export type ProcessorConfig = {
     airdrop_start: number,
     airdrop_end: number,
     max_parallel: number,
     root_hash?: Buffer,
     store_depth: number
+    parentPort?: MessagePort
 }
-
-export type ProcessorConfigMain = ProcessorConfigGeneral & {
-    type: 'main',
-    storage: StorageSqlite
-};
-export type ProcessorConfigWorker = ProcessorConfigGeneral & {
-    type: 'worker',
-    parentPort: MessagePort;
-}
-
-export type ProcessorConfig = ProcessorConfigMain | ProcessorConfigWorker;
 
 type ProcessPfxOptions = {
-    check_root: boolean,
     pruned: boolean,
     save_path: boolean,
     check_cache: boolean
 }
 
 export class NodeProcessor extends events.EventEmitter {
-    protected storage: StorageSqlite | undefined;
-    protected parentPort: MessagePort | undefined;
+    protected parentPort?: MessagePort;
     protected start_from: number;
     protected expire_at: number;
     protected store_depth: number;
@@ -72,12 +61,7 @@ export class NodeProcessor extends events.EventEmitter {
         this.expire_at    = config.airdrop_end;
         this.max_parallel = config.max_parallel;
         this.store_depth  = config.store_depth;
-        if(config.type == 'main') { 
-            this.storage = config.storage;
-        }
-        else {
-            this.parentPort = config.parentPort;
-        }
+        this.parentPort = config.parentPort;
         if(config.root_hash) {
             this.root_hash = config.root_hash;
         }
@@ -108,21 +92,12 @@ export class NodeProcessor extends events.EventEmitter {
             this.runningBatch = [];
             batchCount++;
         }
+
         /*
-        Promise.race(this.runningBatch).then(res => {
-            this.emit('one_done', res);
-            console.log(res);
-            if(this.queue.length > 0) {
-                this.runningBatch[res.idx] = this.processPfx(this.queue.shift()!, res.idx);
-                this.run();
-            }
-        });
-        */
         if(results.length > 2) {
             results = await this.joinResults(results);
         }
-
-        this.results.push(...results);
+        */
 
         return results;
     }
@@ -134,7 +109,46 @@ export class NodeProcessor extends events.EventEmitter {
         return this.results;
     }
 
-    protected async joinResults(results: PfxProcessed[], depth: number = 0, paths: number[] = []): Promise<PfxProcessed[]> {
+    protected async saveBranch(pfx: number | bigint, pfxLength: number, depth: number, hash: Buffer) {
+       if(!this.parentPort){
+            throw new Error("No parent port!");
+       }
+       this.parentPort.postMessage({
+            type: 'branch',
+            pfx,
+            pfxLength,
+            depth,
+            hash: hash.toString('hex')
+        });
+    }
+    protected async saveTop(pfx: number | bigint, pfxLength: number, path: string, boc: Cell) {
+        if(!this.parentPort){
+            throw new Error("No parent port!");
+        }
+        this.parentPort.postMessage({
+            type: 'top',
+            pfx,
+            path,
+            pfxLength,
+            boc: boc.toBoc().toString('base64')
+        });
+    }
+    protected async clearCache() {
+    }
+    protected async updatePath(pfxs: number[], pfxLength: number, path: number[]) {
+        console.log("Update path processor");
+        if(!this.parentPort) {
+            throw new Error("No parent port!");
+        }
+        this.parentPort.postMessage({
+            type: 'update_path',
+            pfxs,
+            pfxLength,
+            path
+        });
+    }
+
+    async joinResults(results: PfxProcessed[], depth: number = 0, paths: number[] = []): Promise<PfxProcessed[]> {
         const nextLevel: PfxProcessed[] = [];
         let resLevel: PfxProcessed[];
         const prevSet = [...results];
@@ -168,21 +182,10 @@ export class NodeProcessor extends events.EventEmitter {
                             len: prevSet[i].len - 1,
                             cell: convertToPrunedBranch(forkCell.hash(0), forkCell.depth(0))
                         });
-
                         if(prevSet[i].len - 1 < this.store_depth) {
-                            if(this.storage) {
-                                await this.storage.saveBranch(nextPfx, prevSet[i].len - 1, forkCell.depth(0), forkCell.hash(0));
-                            }
-                            else if(this.parentPort){
-                                this.parentPort.postMessage({
-                                    type: 'branch',
-                                    pfx: nextPfx,
-                                    length: prevSet[i].len - 1,
-                                    depth: forkCell.depth(0),
-                                    hash: forkCell.hash(0).toString('hex')
-                                });
-                            }
-                        } 
+                            this.saveBranch(nextPfx, prevSet[i].len - 1, forkCell.depth(0), forkCell.hash(0));
+                        }
+
                         prevSet.splice(k, 1);
                         prevSet.splice(i--, 1);
                         resultLeft -= 2;
@@ -203,23 +206,8 @@ export class NodeProcessor extends events.EventEmitter {
                 resLevel = nextLevel;
             }
             if(depth == 0) {
-                console.log("Merging...");
-                if(this.storage) {
-                    await this.storage.saveBranchCache();
-                    await this.storage.clearTopCache();
-                    await this.storage.updatePath(resLevel.map(r => Number(r.pfx)), resLevel[0].len, paths);
-                }
-                else if(this.parentPort) {
-                    this.parentPort.postMessage({
-                        type: 'update_path',
-                        pfxs: resLevel.map(r => r.pfx),
-                        pfxLen: resLevel[0].len,
-                        paths
-                    });
-                }
-                else {
-                    throw new Error("Invalid instance");
-                }
+                await this.clearCache();
+                await this.updatePath(resLevel.map(r => Number(r.pfx)), resLevel[0].len, paths);
             }
         }
         return resLevel;
@@ -321,34 +309,43 @@ export class NodeProcessor extends events.EventEmitter {
         // Prune all data leafs even if opt.pruned = false
         return opts.pruned ? convertToPrunedBranch(resCell.hash(0), resCell.depth(0)) : resCell;
     }
+    setBranchMap(map: Map<string,{depth: number, hash: Buffer | Uint8Array}>) {
+        const newMap = new Map<string, {depth: number, hash: Buffer}>;
+        for(let [k, v] of map.entries()) {
+            // I've never asked for this
+            if(Buffer.isBuffer(v.hash)) {
+                newMap.set(k, {depth: v.depth, hash: v.hash});
+            }
+            else {
+                newMap.set(k, {depth: v.depth, hash: Buffer.from(v.hash)});
+            }
+        }
+        this.branchMap = newMap;
+    }
     protected async processPfxCached(pfx: number | bigint, pfxLen: number, opts?:Partial<ProcessPfxOptions>) {
         let res: Cell;
         if(!opts) {
             opts = {
                 pruned: true,
                 check_cache: true,
-                check_root: false,
                 save_path: false
             }
         }
         const check_cache = opts.check_cache ?? true;
         if(this.branchMap === undefined) {
-            if(!this.storage) {
-                throw new Error("Storage is required for functioning");
-            }
-
-            this.branchMap = await this.storage.getBranchesMap();
+            throw new Error("Branch map is required for functioning");
         }
-        const cached = check_cache ? this.branchMap.get(`${pfxLen.toString(16)}:${pfx.toString(16)}`) : false;
+        const pfxKey = `${pfxLen.toString(16)}:${pfx.toString(16)}`;
+        const cached = check_cache ? this.branchMap.get(pfxKey) : false;
         if(cached) {
             // console.log("Cache hit!");
             res = convertToPrunedBranch(cached.hash, cached.depth);
         }
         else {
-            if(!this.storage) {
-                throw new Error("Storage is required for functioning");
-            }
+            console.log("Pfx:", pfxKey);
+            throw new Error("Storage is required for functioning");
 
+            /*
             console.log("Cache missed!");
             const pfxData = await this.storage.getRecPrefixed(pfxLen, pfx);
             if(!pfxData) {
@@ -356,6 +353,7 @@ export class NodeProcessor extends events.EventEmitter {
             }
             res = (await this.processPfx(pfxData, opts)).cell;
             // console.log("Hash:",res.hash(0));
+            */
         }
         return res;
     }
@@ -369,9 +367,6 @@ export class NodeProcessor extends events.EventEmitter {
         const   nextFork = Number(path.shift());
         const leafLen  = nextFork - prevFork - 1;
         const keyLeft  = this.maxLen - nextFork;
-        if(!this.storage) {
-            throw new Error("Storage is required for proof build");
-        }
 
         if(nextFork <= 32) {
             curPfx  = getN(shortPfx, nextFork, true);
@@ -429,14 +424,10 @@ export class NodeProcessor extends events.EventEmitter {
             pfx: curPfx
         }
     }
-    async buildProof(address: Address) {
-        if(!this.storage) {
-            throw new Error("Storage is required for proof build");
-        }
+    async buildProof(address: Address, proofPath: {path: string, boc: string}) {
 
         const fullPfx = address.hash;
         const shortPfx  = fullPfx.readUintBE(0, 4);
-        const proofPath = await this.storage.getPath(address.toRawString())
         console.log("Proof path:", proofPath);
 
         if(!proofPath) {
@@ -457,9 +448,6 @@ export class NodeProcessor extends events.EventEmitter {
 
         if(!this.root_hash) {
             throw new Error("Root hash is required for buildProofFromTop operation");
-        }
-        if(!this.storage) {
-            throw new Error("Storage is required for proof building");
         }
 
         const proofs: [bigint, string][] = [];
@@ -635,39 +623,12 @@ export class NodeProcessor extends events.EventEmitter {
         if(!opts) {
             opts = {
                 pruned: true,
-                check_root: true,
                 check_cache: false,
                 save_path: true
             }
         }
-        const checkRoot = opts.check_root ?? false; 
 
-        if(checkRoot) {
-            if(!this.storage) {
-                throw new Error("Storage is required for root check");
-            }
-            const rootPos = await this.storage.findBranchRoot(pfx.len, pfx.keys[0]);
-            if(rootPos != pfx.len) {
-                const delta  = pfx.len - rootPos;
-                const bitPos = 32 - rootPos - 1;
-                pfx.len      = rootPos;
-                if(typeof pfx.pfx == 'bigint') {
-                    throw new Error("TODO");
-                }
-                let bitsToKey = getN(pfx.pfx, delta, false);
-                pfx.pfx >>= delta;
-                if(bitsToKey != 0) {
-                    bitsToKey *= 2 ** bitPos
-                    pfx.keys = pfx.keys.map(k => bitsToKey + k);
-                }
-                return await this.processPfx(pfx, {...opts, check_root: false});
-            }
-        }
-        if(pfx.len > 100) {
-            console.log(pfx);
-        }
-
-        nextOptions = {...opts, check_root: false};
+        nextOptions = {...opts};
         
         nextFork = findNextFork(pfx.keys);
         if(nextFork < 32) {
@@ -724,7 +685,7 @@ export class NodeProcessor extends events.EventEmitter {
                 console.log(pfx);
                 console.log("Data:", pfx.data);
                 console.log("Failed while processing:", pfx);
-                throw new Error("FIX DAT");
+                throw e;// new Error("FIX DAT");
             }
         }
 
@@ -737,38 +698,9 @@ export class NodeProcessor extends events.EventEmitter {
 
         if(opts.save_path && pfx.len < this.store_depth) {
             if(expectTop) {
-                if(this.storage) {
-                    const suffixLen = this.maxLen - pfx.len;
-                    const addresses = readAllPrefixes(resCell, pfx.pfx, pfx.len, suffixLen).map(
-                        p => '0:' + joinSuffixes(pfx.pfx, [suffixLen, p]).toString(16).padStart(64,'0')
-                    );
-                    await this.storage.saveTop(pfx.pfx, pfx.len, pfx.data[0].path.join(','), resCell.toBoc().toString('base64'), addresses);
-                } else if(this.parentPort) {
-                    this.parentPort.postMessage({
-                        type: 'save_top',
-                        pfx: pfx.pfx,
-                        len: pfx.len,
-                        boc: resCell.toBoc().toString('base64')
-                    });
-                }
-                else {
-                    throw new Error("Invalid instance");
-                }
+                await this.saveTop(pfx.pfx, pfx.len, pfx.data[0].path.join(','), resCell);
             }
-            if(this.storage) {
-                await this.storage.saveBranch(pfx.pfx, pfx.len, resCell.depth(0), resCell.hash(0));
-            } else if(this.parentPort) {
-                this.parentPort.postMessage({
-                    type: 'save_branch',
-                    pfx: pfx.pfx,
-                    len: pfx.len,
-                    depth: resCell.depth(0),
-                    hash: resCell.hash(0).toString('base64')
-                });
-            }
-            else {
-                throw new Error("Invalid instance");
-            }
+            await this.saveBranch(pfx.pfx, pfx.len, resCell.depth(0), resCell.hash(0));
         }
 
         return {pfx: pfx.pfx, len: pfx.len, cell: resCell};
