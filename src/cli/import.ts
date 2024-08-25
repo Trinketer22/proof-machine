@@ -21,7 +21,7 @@ async function create_table() {
     await runQuery("DROP TABLE IF EXISTS `airdrop`");
     await runQuery("DROP TABLE IF EXISTS `branches`");
     await runQuery("DROP TABLE IF EXISTS `tops`");
-    await runQuery("CREATE TABLE `airdrop` (`address` TEXT, `amount` BIGINT, `key` INTEGER, `top_idx` INTEGER DEFAULT -1, UNIQUE(`address`) ON CONFLICT ROLLBACK)");
+    await runQuery("CREATE TABLE `airdrop` (`address` TEXT, `amount` BIGINT, `key` INTEGER, `top_idx` INTEGER DEFAULT -1)");
     await runQuery("CREATE TABLE `branches` (`prefix` TEXT, `depth` INTEGER, `hash` TEXT, UNIQUE(`prefix`) ON CONFLICT IGNORE)");
     await runQuery("CREATE TABLE `tops` (`prefix` INTEGER, `boc` TEXT, `path` TEXT DEFAULT '', UNIQUE(`prefix`) ON CONFLICT REPLACE)");
 }
@@ -69,6 +69,7 @@ async function run() {
         // console.log("Inserting last batch");
         db.run("INSERT INTO `airdrop` (`address`, `amount`, `key`) VALUES " + placeholders.join(','), insertParams);
     }
+    db.run("CREATE UNIQUE INDEX `addr_idx` ON `airdrop` (`address`)");
     db.close();
 }
 
