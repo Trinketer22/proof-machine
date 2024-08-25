@@ -65,12 +65,16 @@ async function buildTree(per_chain: number, parallel: number) {
     const limit         = 32 * parallel;
     let keepGoing       = true;
 
+    let pfxPromise = storage.groupPrefixes(pfxLen, offset, limit);
+
     do {
-        const pfxs = await storage.groupPrefixes(pfxLen, offset, limit);
+        const pfxs = await pfxPromise;
         // console.log("Pfxs:", pfxs);
 
         if(pfxs.length > 0) {
             offset += limit;
+            pfxPromise = storage.groupPrefixes(pfxLen, offset, limit);
+
             for(let i = 0; i < pfxs.length; i++) {
                 const pfx = pfxs[i];
                 const rootPos = await storage.findBranchRoot(pfx.len, pfx.keys[0]);
