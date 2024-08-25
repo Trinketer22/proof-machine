@@ -144,26 +144,28 @@ export class StorageSqlite {
         }
         return keyLen;
     }
-    saveBranchCache() {
+    async saveBranchCache() {
         if(this.branchTimeout) {
             clearTimeout(this.branchTimeout.timeout);
              this.branchTimeout.cleared = true;
         }
         if(this.branchCache.length > 0) {
             this.branchCacheLocked = true;
-            const params: unknown[] = [];
-            let placeholders  = '(?,?,?)';
-            let branchData = this.branchCache.shift()!;
-            params.push(branchData.pfx, branchData.depth, branchData.hash.toString('base64'));
             do {
-                let left = this.branchCache.length;
-                while(left--) {
+                let chunkLength = Math.min(1024, this.branchCache.length);
+                const params: unknown[] = [];
+                let placeholders  = '(?,?,?)';
+                let branchData = this.branchCache.shift()!;
+                params.push(branchData.pfx, branchData.depth, branchData.hash.toString('base64'));
+                while(--chunkLength) {
                     placeholders += ',(?,?,?)';
                     branchData = this.branchCache.shift()!;
                     params.push(branchData.pfx, branchData.depth, branchData.hash.toString('base64'));
                 }
+                this.db.run("INSERT INTO `branches` (`prefix`, `depth`, `hash`) VALUES " + placeholders, params);
             } while(this.branchCache.length > 0);
 
+            /*
             return new Promise((resolve, reject) => {
                 const query = "INSERT INTO `branches` (`prefix`, `depth`, `hash`) VALUES " + placeholders;
                 this.db.run(query, params, (err) => {
@@ -175,6 +177,7 @@ export class StorageSqlite {
                     }
                 });
             }).then(v => this.branchCacheLocked = false);
+            */
         }
     }
     async saveBranch(pfx: number | bigint, len: number, depth: number, hash: Buffer) {
