@@ -114,7 +114,7 @@ export function readAllPrefixes(tree: Cell, pfx: number | bigint, pfxLen: number
     }
     else {
         pfxLeft  = pfxRes.pfx * 2n;
-        pfxRight = pfxRes.pfx + 1n;
+        pfxRight = pfxLeft + 1n;
     }
 
     if(!l.isExotic) {
