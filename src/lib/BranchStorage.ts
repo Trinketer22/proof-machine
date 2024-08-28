@@ -61,7 +61,7 @@ export class StorageSqlite {
 
     groupPrefixes(keyLen: number, offset: number = 0, limit: number = 100) {
         return new Promise((resolve:(value: PfxCluster[]) => void, reject) => {
-            const shift = 32 - (keyLen % 32);
+            const shift = 32 - keyLen;
             const query = "SELECT `key` >> ? AS pfx, group_concat(`key`) AS keys, group_concat(`amount`) AS amounts, group_concat(substr(`address`, 11)) as `suffix` FROM `airdrop` GROUP BY (`key` >> ?) LIMIT ?,?"
             this.db.all<{
                 total: number,
