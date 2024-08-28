@@ -438,25 +438,6 @@ export class StorageSqlite {
             });
         });
     }
-    getEffectiveBits() {
-        return new Promise((resolve:(value: number) => void, reject) => {
-            this.getTotalRecords().then(
-                v => resolve(Math.ceil(Math.log2(v)))
-            ).catch(e => reject(e));
-            /*
-            const query = "SELECT COUNT(`address`) AS `total` FROM `airdrop`";
-
-            this.db.get<{total: number}>(query, (err, row) => {
-                if(err) {
-                    reject(err);
-                }
-                else {
-                    resolve(Math.ceil(Math.log2(row.total)));
-                }
-            })
-            */
-        })
-    }
 
     getRecPrefixedCount(keyLen: number, key: bigint) {
         return new Promise((resolve:(value: number) => void, reject) => {
