@@ -54,15 +54,15 @@ const airDropValue: DictionaryValue<AirdropData> = {
     }
 }
 
-async function buildTree(per_chain: number, parallel: number) {
-    const effectiveBits = await storage.getEffectiveBits();
-    const   pfxLen      = Math.max(effectiveBits - Math.floor(Math.log2(per_chain)), 0);
+async function buildTree(per_chain: number, limit: number, offset: number = 0) {
+    const total = await storage.getTotalRecords();
+    const effectiveBits = Math.ceil(Math.log2(total))
+    const pfxLen        = Math.max(effectiveBits - Math.floor(Math.log2(per_chain)), 0);
+
     let root: Cell;
     console.log("Effective bits:", effectiveBits);
     console.log("Pfx len:", pfxLen);
     
-    let offset          = 0;
-    const limit         = 32 * parallel;
     let keepGoing       = true;
 
     let pfxPromise = storage.groupPrefixes(pfxLen, offset, limit);
@@ -148,6 +148,7 @@ async function buildTree(per_chain: number, parallel: number) {
 function help() {
     console.log("--per-worker [Apprximate amount of forks processed at a time] default:(1000)");
     console.log(`--parallel [force number of threads]`);
+    console.log("--batch-size' [size of the query results batch. Should be power of 2] default:(32 * parallel)");
     console.log("--cache-bits' [Up to that <= prefix length, each branch hash/depth is stored in db] default:(16)");
     console.log("--help, -h get this message\n\n");
 
@@ -157,6 +158,7 @@ async function run() {
     const args = arg({
         '--per-worker': Number,
         '--parallel': Number,
+        '--batch-size': Number,
         '--cache-bits': Number,
         '--help': Boolean,
         '-h': '--help'
@@ -173,12 +175,19 @@ async function run() {
         return;
     }
 
+
     const perWorker = args['--per-worker'] ?? 1000;
     const storeBits = args['--cache-bits'] ?? 16;
     const parallel  = args['--parallel'] ?? availableParallelism();
-    const workers: Worker[] = Array(parallel);
+    const batchSize = args['--batch-size'] ?? parallel * 32;
 
     if(isMainThread) {
+        const workers: Worker[] = Array(parallel);
+        const batchLog = Math.log2(batchSize);
+        if(!Number.isInteger(batchLog)) {
+            throw new Error("Batch size should be power of two!")
+        }
+
         storage   = new StorageSqlite(args._[0]);
         for(let i = 0; i < parallel; i++) {
             workers[i] = new Worker(__filename, {argv: process.argv.slice(2)});
@@ -204,7 +213,7 @@ async function run() {
         */
 
         let rootHash: Buffer;
-        const root = await buildTree(perWorker, parallel);
+        const root = await buildTree(perWorker, batchSize);
         rootHash   = root.hash(0);
         console.log("Root hash:", rootHash.toString('hex'));
         console.log("Saving to root_hash");
