@@ -5,9 +5,14 @@ import { NodeProcessor } from '../lib/NodeProcessor';
 import { forceFork } from '../lib/Dictionary';
 import {writeFile} from 'node:fs/promises';
 import arg from 'arg';
+import { availableParallelism } from 'node:os';
+import { isMainThread, parentPort } from 'node:worker_threads';
+import { getN } from '../lib/util';
+import { NodeScheduler, WorkerMessage } from '../lib/NodeScheduler';
+import { Worker } from 'node:worker_threads';
 
 let storage: StorageSqlite;
-let processor: NodeProcessor;
+let scheduler: NodeScheduler;
 
 function sortPfxs(pfxs: PfxCluster[], maxLen: number) {
     const matching: PfxCluster[] = [];
@@ -33,6 +38,7 @@ type AirdropData = {
     start_from: number,
     expire_at: number
 };
+
 const airDropValue: DictionaryValue<AirdropData> = {
     serialize: (src, builder) => {
         builder.storeCoins(src.amount);
@@ -47,20 +53,52 @@ const airDropValue: DictionaryValue<AirdropData> = {
         }
     }
 }
-async function buildTreeLevel(pfxLen: number) {
-    let offset          = 0;
-    const limit           = 128;
+
+async function buildTree(per_chain: number, limit: number, offset: number = 0) {
+    const total = await storage.getTotalRecords();
+    const effectiveBits = Math.ceil(Math.log2(total))
+    const pfxLen        = Math.max(effectiveBits - Math.floor(Math.log2(per_chain)), 0);
+
+    let root: Cell;
+    console.log("Effective bits:", effectiveBits);
+    console.log("Pfx len:", pfxLen);
+    
     let keepGoing       = true;
 
+    let pfxPromise = storage.groupPrefixes(pfxLen, offset, limit);
+
     do {
-        const pfxs = await storage.groupPrefixes(pfxLen, offset, limit);
+        const pfxs = await pfxPromise;
         // console.log("Pfxs:", pfxs);
 
         if(pfxs.length > 0) {
             offset += limit;
+            pfxPromise = storage.groupPrefixes(pfxLen, offset, limit);
+
+            for(let i = 0; i < pfxs.length; i++) {
+                const pfx = pfxs[i];
+                const rootPos = await storage.findBranchRoot(pfx.len, pfx.keys[0]);
+                if(rootPos != pfx.len) {
+                    const delta  = pfx.len - rootPos;
+                    const bitPos = 32 - rootPos - 1;
+                    pfx.len      = rootPos;
+                    if(typeof pfx.pfx == 'bigint') {
+                        throw new Error("TODO");
+                    }
+                    let bitsToKey = getN(pfx.pfx, delta, false, pfx.len);
+                    pfx.pfx >>= delta;
+                    if(bitsToKey != 0) {
+                        bitsToKey *= 2 ** bitPos
+                        pfx.keys = pfx.keys.map(k => bitsToKey + k);
+                    }
+                    pfxs[i] = pfx;
+                }
+            }
+
+            await scheduler.add(pfxs);
+
             //const sorted = sortPfxs(pfxs, per_chain);
             console.log("Processing batch...");
-            await processor.add(pfxs);
         }
         else {
             console.log("Done!");
@@ -69,17 +107,8 @@ async function buildTreeLevel(pfxLen: number) {
     } while(keepGoing);
 
     console.log("Final merge...");
-    return await processor.finalize();
-}
+    const nextLevel = await scheduler.finalize();
 
-async function buildTree(per_chain: number) {
-    const effectiveBits = await storage.getEffectiveBits();
-    const   pfxLen        = Math.max(effectiveBits - Math.floor(Math.log2(per_chain)), 0);
-    let root: Cell;
-    console.log("Effective bits:", effectiveBits);
-    console.log("Pfx len:", pfxLen);
-    
-    const nextLevel = await buildTreeLevel(pfxLen);
     if(nextLevel.length == 2) {
         let leftIdx: number;
         let rightIdx: number;
@@ -118,7 +147,8 @@ async function buildTree(per_chain: number) {
 
 function help() {
     console.log("--per-worker [Apprximate amount of forks processed at a time] default:(1000)");
-    // console.log(`--parallel [force count of threads] (TODO)`);
+    console.log(`--parallel [force number of threads]`);
+    console.log("--batch-size' [size of the query results batch. Should be power of 2] default:(32 * parallel)");
     console.log("--cache-bits' [Up to that <= prefix length, each branch hash/depth is stored in db] default:(16)");
     console.log("--help, -h get this message\n\n");
 
@@ -127,6 +157,8 @@ function help() {
 async function run() {
     const args = arg({
         '--per-worker': Number,
+        '--parallel': Number,
+        '--batch-size': Number,
         '--cache-bits': Number,
         '--help': Boolean,
         '-h': '--help'
@@ -143,43 +175,107 @@ async function run() {
         return;
     }
 
+
     const perWorker = args['--per-worker'] ?? 1000;
     const storeBits = args['--cache-bits'] ?? 16;
+    const parallel  = args['--parallel'] ?? availableParallelism();
+    const batchSize = args['--batch-size'] ?? parallel * 32;
 
-    storage   = new StorageSqlite(args._[0]);
-    processor = new NodeProcessor({
-        type: 'main',
-        airdrop_start: 1000,
-        airdrop_end: 2000,
-        max_parallel: 1, // Multi threaded version is not today
-        storage,
-        store_depth: storeBits,
-    });
+    if(isMainThread) {
+        const workers: Worker[] = Array(parallel);
+        const batchLog = Math.log2(batchSize);
+        if(!Number.isInteger(batchLog)) {
+            throw new Error("Batch size should be power of two!")
+        }
 
-    /*
-    const testRec = await storage.getRecPrefixed(20, 862452);
-    processor.add([testRec]);
-    */
-    // Average effective bits used to identify record
-    
-    /*
-    const testData = await storage.getRecPrefixed(18, 261923);
-    await processor.processPfx(testData);
-    */
+        storage   = new StorageSqlite(args._[0]);
+        for(let i = 0; i < parallel; i++) {
+            workers[i] = new Worker(__filename, {argv: process.argv.slice(2)});
+        }
+        scheduler = new NodeScheduler({
+            airdrop_start: 1000,
+            airdrop_end: 2000,
+            max_parallel: parallel,
+            workers,
+            storage,
+            store_depth: storeBits,
+        });
 
-    let rootHash: Buffer;
-    const root = await buildTree(perWorker);
-    rootHash   = root.hash(0);
-    console.log("Root hash:", rootHash.toString('hex'));
-    console.log("Saving to root_hash");
-    await writeFile('root_hash', rootHash.toString('hex') + "\n", {encoding: 'utf8'});
+        /*
+        const testRec = await storage.getRecPrefixed(20, 862452);
+        scheduler.add([testRec]);
+        */
+        // Average effective bits used to identify record
+        
+        /*
+        const testData = await storage.getRecPrefixed(18, 261923);
+        await scheduler.processPfx(testData);
+        */
+
+        let rootHash: Buffer;
+        const root = await buildTree(perWorker, batchSize);
+        rootHash   = root.hash(0);
+        console.log("Root hash:", rootHash.toString('hex'));
+        console.log("Saving to root_hash");
+        await writeFile('root_hash', rootHash.toString('hex') + "\n", {encoding: 'utf8'});
+    }
+    else {
+        if(parentPort == null) {
+            throw new Error("Parent port is null");
+        }
+        const processor = new NodeProcessor({
+            airdrop_start: 1000,
+            airdrop_end: 2000,
+            max_parallel: 1,
+            parentPort,
+            store_depth: storeBits
+        });
+
+        let keepGoing = true;
+        if(parentPort) {
+            while(keepGoing) {
+                await new Promise((resolve, reject) => {
+                    parentPort!.once('message', async (msg: WorkerMessage) => {
+                        if(msg.type == 'pfx') {
+                            msg.pfx.forEach(pfx => {
+                                pfx.data.forEach(d => {
+                                    d.suffix = Buffer.from(d.suffix);
+                                });
+                            });
+                            try { 
+                                const res = await processor.add(msg.pfx);
+                                parentPort!.postMessage({
+                                    type: 'processed',
+                                    pfx: res.map(r => {
+                                        return {
+                                            ...r,
+                                            cell: r.cell.toBoc().toString('base64')
+                                        }
+                                    })
+                                });                               resolve(res);
+                            } catch(e) {
+                                console.log("Error:", e);
+                                reject(e);
+                            }
+                        }
+                        else {
+                            keepGoing = false;
+                        }
+                    });
+                });
+            }
+        }
+        else {
+            throw new Error("No parent port");
+        }
+    }
 
     /*
      * USE batchProof utility instead
     let gotCount = 0;
     for await (let testRow of storage.getAll()) {
         const randomAddress = Address.parseRaw(testRow.address);
-        let proof = await processor.buildProof(randomAddress);
+        let proof = await scheduler.buildProof(randomAddress);
         if(!proof.refs[0].hash(0).equals(rootHash)){ 
             console.log("Address:", randomAddress.toRawString());
             console.log("Got right:", gotCount);
@@ -196,7 +292,7 @@ async function run() {
     */
 
     // ts  = Date.now();
-    // proof = await processor.buildProof(randomAddress);
+    // proof = await scheduler.buildProof(randomAddress);
     // console.log("Second proof took:", (Date.now() - ts) / 1000);
 
     /*
@@ -206,7 +302,7 @@ async function run() {
     for await (let tst of storage.getAll()) {
         const tstAddr = Address.parseRaw(tst.address);
         const ts = Date.now();
-        const proof = await processor.buildProof(tstAddr);
+        const proof = await scheduler.buildProof(tstAddr);
         total += Date.now() - ts;
         if(!proof.refs[0].hash(0).equals(rootHash)) {
             throw new Error("Proof doesn't match:" + tstAddr.toRawString());

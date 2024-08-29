@@ -38,21 +38,23 @@ async function run() {
     const testAddress = Address.parse(args._[0]);
     const storage = new StorageSqlite(args['--database']);
     const processor = new NodeProcessor({
-        type: 'main',
-        storage,
         store_depth: 16,
         airdrop_start: 1000,
         airdrop_end: 2000,
         max_parallel: 1
     });
 
-    const proof = await processor.buildProof(testAddress);
+    processor.setBranchMap(await storage.getBranchesMap());
+
+    const path  = await storage.getPath(testAddress.toRawString());
+    const proof = await processor.buildProof(testAddress, path);
     if(proof.refs[0].hash(0).equals(rootHash)){ 
         console.log("Proof:", proof.toBoc().toString('base64'));
         console.log("Done!");
         console.log("Proof hash:", proof.refs[0].hash(0));
     }
     else {
+        console.log(proof.refs[0].hash(0));
         // console.log("Correct count:",correctCount);
         console.log("Dang, doesn't match");
         console.log("Address:", testAddress);

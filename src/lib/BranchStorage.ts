@@ -30,7 +30,7 @@ export class StorageSqlite {
     protected branchCache: {
         pfx: string,
         depth: number,
-        hash: Buffer
+        hash: Buffer 
     }[];
     protected topCacheLocked: boolean
     protected topCache: {
@@ -39,6 +39,10 @@ export class StorageSqlite {
         path: string,
         addresses: string[]
     }[]
+    protected updateCache: {
+        path: string,
+        pfxs: number[]
+    }[]
 
     constructor(path: string) {
         this.db = new sqlite3.Database(path);
@@ -46,6 +50,7 @@ export class StorageSqlite {
         this.branchCacheLocked = false;
         this.branchCache = [];
         this.topCache    = [];
+        this.updateCache = [];
         this.topCacheLocked = false;
         this.db.run("pragma journal_mode = WAL");
         this.db.run("pragma synchronous  = normal");
@@ -56,7 +61,7 @@ export class StorageSqlite {
 
     groupPrefixes(keyLen: number, offset: number = 0, limit: number = 100) {
         return new Promise((resolve:(value: PfxCluster[]) => void, reject) => {
-            const shift = 32 - (keyLen % 32);
+            const shift = 32 - keyLen;
             const query = "SELECT `key` >> ? AS pfx, group_concat(`key`) AS keys, group_concat(`amount`) AS amounts, group_concat(substr(`address`, 11)) as `suffix` FROM `airdrop` GROUP BY (`key` >> ?) LIMIT ?,?"
             this.db.all<{
                 total: number,
@@ -139,26 +144,28 @@ export class StorageSqlite {
         }
         return keyLen;
     }
-    saveBranchCache() {
+    async saveBranchCache() {
         if(this.branchTimeout) {
             clearTimeout(this.branchTimeout.timeout);
              this.branchTimeout.cleared = true;
         }
         if(this.branchCache.length > 0) {
             this.branchCacheLocked = true;
-            const params: unknown[] = [];
-            let placeholders  = '(?,?,?)';
-            let branchData = this.branchCache.shift()!;
-            params.push(branchData.pfx, branchData.depth, branchData.hash.toString('base64'));
             do {
-                let left = this.branchCache.length;
-                while(left--) {
+                let chunkLength = Math.min(1024, this.branchCache.length);
+                const params: unknown[] = [];
+                let placeholders  = '(?,?,?)';
+                let branchData = this.branchCache.shift()!;
+                params.push(branchData.pfx, branchData.depth, branchData.hash.toString('base64'));
+                while(--chunkLength) {
                     placeholders += ',(?,?,?)';
                     branchData = this.branchCache.shift()!;
                     params.push(branchData.pfx, branchData.depth, branchData.hash.toString('base64'));
                 }
+                this.db.run("INSERT INTO `branches` (`prefix`, `depth`, `hash`) VALUES " + placeholders, params);
             } while(this.branchCache.length > 0);
 
+            /*
             return new Promise((resolve, reject) => {
                 const query = "INSERT INTO `branches` (`prefix`, `depth`, `hash`) VALUES " + placeholders;
                 this.db.run(query, params, (err) => {
@@ -170,6 +177,7 @@ export class StorageSqlite {
                     }
                 });
             }).then(v => this.branchCacheLocked = false);
+            */
         }
     }
     async saveBranch(pfx: number | bigint, len: number, depth: number, hash: Buffer) {
@@ -191,7 +199,7 @@ export class StorageSqlite {
             hash
         });
 
-        if(this.branchCache.length < 1024) {
+        if(this.branchCache.length < 512) {
             if(this.branchTimeout == undefined || this.branchTimeout.cleared) {
                this.branchTimeout = {
                 timeout: setTimeout(() => {
@@ -253,6 +261,7 @@ export class StorageSqlite {
     updatePath(pfxs: number[], pfxLen: number, path: number[]) {
         console.log("PfxLen:", pfxLen);
         console.log("PFXS:", pfxs);
+        console.log(path);
         const concat = "UPDATE `tops` SET `path` = concat_ws(',', ?, `path`) WHERE (`prefix` >> ((`prefix` & 31) - ? + 5)) IN(" + new Array(pfxs.length).fill('?').join(',') + ')';
         return new Promise((resolve, reject) => {
             this.db.run(concat, [path.join(','), pfxLen, ...pfxs], (err) => {
@@ -428,25 +437,6 @@ export class StorageSqlite {
                 }
             });
         });
-    }
-    getEffectiveBits() {
-        return new Promise((resolve:(value: number) => void, reject) => {
-            this.getTotalRecords().then(
-                v => resolve(Math.ceil(Math.log2(v)))
-            ).catch(e => reject(e));
-            /*
-            const query = "SELECT COUNT(`address`) AS `total` FROM `airdrop`";
-
-            this.db.get<{total: number}>(query, (err, row) => {
-                if(err) {
-                    reject(err);
-                }
-                else {
-                    resolve(Math.ceil(Math.log2(row.total)));
-                }
-            })
-            */
-        })
     }
 
     getRecPrefixedCount(keyLen: number, key: bigint) {
