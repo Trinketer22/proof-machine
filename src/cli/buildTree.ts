@@ -152,10 +152,12 @@ function help() {
     console.log("--cache-bits' [Up to that <= prefix length, each branch hash/depth is stored in db] default:(16)");
     console.log("--help, -h get this message\n\n");
 
-    console.log(`${__filename} <database_path>`);
+    console.log(`${__filename} --start <airdrop start> --end <airdrop end> <database_path>`);
 }
 async function run() {
     const args = arg({
+        '--start': String,
+        '--end': String,
         '--per-worker': Number,
         '--parallel': Number,
         '--batch-size': Number,
@@ -174,7 +176,21 @@ async function run() {
         help();
         return;
     }
+    if(!args['--start']) {
+        console.log("--start is an required argument");
+        help();
+        return;
+    }
+    if(!args['--end']) {
+        console.log("--end is an required argument");
+        help();
+        return;
+    }
 
+
+
+    let airdropStart = Date.parse(args['--start']);
+    let airdropEnd   = Date.parse(args['--end']);
 
     const perWorker = args['--per-worker'] ?? 1000;
     const storeBits = args['--cache-bits'] ?? 16;
@@ -182,6 +198,9 @@ async function run() {
     const batchSize = args['--batch-size'] ?? parallel * 32;
 
     if(isMainThread) {
+        console.log("Airdrop start:", new Date(airdropStart).toString());
+        console.log("Airdrop end:", new Date(airdropEnd).toString());
+
         const workers: Worker[] = Array(parallel);
         const batchLog = Math.log2(batchSize);
         if(!Number.isInteger(batchLog)) {
@@ -193,8 +212,8 @@ async function run() {
             workers[i] = new Worker(__filename, {argv: process.argv.slice(2)});
         }
         scheduler = new NodeScheduler({
-            airdrop_start: 1000,
-            airdrop_end: 2000,
+            airdrop_start: Math.floor(airdropStart / 1000),
+            airdrop_end:   Math.floor(airdropEnd   / 1000),
             max_parallel: parallel,
             workers,
             storage,
@@ -224,8 +243,8 @@ async function run() {
             throw new Error("Parent port is null");
         }
         const processor = new NodeProcessor({
-            airdrop_start: 1000,
-            airdrop_end: 2000,
+            airdrop_start: Math.floor(airdropStart / 1000),
+            airdrop_end: Math.floor(airdropEnd / 1000),
             max_parallel: 1,
             parentPort,
             store_depth: storeBits
