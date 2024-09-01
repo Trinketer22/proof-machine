@@ -4,10 +4,13 @@ import { forceFork, readAllPrefixes } from './Dictionary';
 import { PfxCluster, StorageSqlite } from './BranchStorage';
 import { convertToPrunedBranch, joinSuffixes } from './util';
 import { Worker } from 'node:worker_threads';
-import { deflate } from 'node:zlib';
+import { Session } from './Session';
+import { readFile } from 'node:fs/promises';
+
 
 type SchedulerConfig = ProcessorConfig & {
     storage: StorageSqlite,
+    session: Session,
     workers: Worker[]
 }
 
@@ -44,20 +47,27 @@ type UpdatePath = {
     path: number[],
 }
 
+type WorkerError = {
+    type: 'error',
+    error: unknown
+}
+
 type NoMoreData = {
     type: 'no_more_data',
 }
 
-export type WorkerMessage = MessageProcesed | MessagePfx | SaveBranch | SaveTop | UpdatePath | NoMoreData;
+export type WorkerMessage = MessageProcesed | MessagePfx | SaveBranch | SaveTop | UpdatePath | NoMoreData | WorkerError;
 
 export class NodeScheduler extends NodeProcessor{
     protected workers: Worker[]
     protected storage: StorageSqlite;
+    protected session: Session;
 
     constructor(config: SchedulerConfig) {
         super(config);
         this.workers = config.workers
         this.storage = config.storage;
+        this.session = config.session;
     }
     override async saveBranch(pfx: number | bigint, pfxLength: number, depth: number, hash: Buffer) {
         await this.storage.saveBranch(pfx, pfxLength, depth, hash);
@@ -91,8 +101,17 @@ export class NodeScheduler extends NodeProcessor{
                 break;
             }
         }
+        const handleError = (msg: WorkerMessage) => {
+            if(msg.type == 'error') {
+                console.log("Error:", msg.error);
+                throw(msg.error);
+            }
+        }
 
-        this.workers.forEach(w => w.on('message', handleDb));
+        this.workers.forEach(w => {
+            w.on('message', handleDb);
+            w.on('message', handleError);
+        });
 
         while(this.queue.length > 0 || this.runningBatch.length > 0) {
             let toProcess = this.queue.length;
@@ -132,7 +151,9 @@ export class NodeScheduler extends NodeProcessor{
             results = await this.joinResults(results);
         }
 
-        this.results.push(...results);
+        await this.session.addData(results);
+
+        // this.results.push(...results);
 
         this.workers.forEach(w => w.removeAllListeners('message'));
 
@@ -147,11 +168,22 @@ export class NodeScheduler extends NodeProcessor{
         await this.storage.clearTopCache();
     }
 
-    override async finalize() {
-        if(this.results.length > 2) {
-            this.results = await this.joinResults(this.results);
+    async finalize() {
+        const dataFile = await this.session.getDataFile();
+        if(!dataFile) {
+            throw new Error("No data file to save");
         }
+        const dataLeft = (await dataFile.readFile({encoding: 'utf8'})).trimEnd();
+        const tail     = dataLeft.split("\n").flatMap(d => {
+            return (JSON.parse(d) as PfxProcessedSerialized[]).map(k => {
+                return {
+                    ...k,
+                    cell: Cell.fromBase64(k.cell)
+                };
+            });
+        });
+        const res  = await this.joinResults(tail);
         this.workers.forEach(w => w.postMessage({type: 'no_more_data'}));
-        return this.results;
+        return res;
     }
 }

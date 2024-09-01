@@ -3,16 +3,20 @@ import { Cell, DictionaryValue } from '@ton/core';
 import { PfxCluster, StorageSqlite } from '../lib/BranchStorage';
 import { NodeProcessor } from '../lib/NodeProcessor';
 import { forceFork } from '../lib/Dictionary';
-import {writeFile} from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import arg from 'arg';
 import { availableParallelism } from 'node:os';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import { getN } from '../lib/util';
 import { NodeScheduler, WorkerMessage } from '../lib/NodeScheduler';
 import { Worker } from 'node:worker_threads';
+import { Session } from '../lib/Session';
+import cliProgress from 'cli-progress';
+import inquirer from 'inquirer';
 
 let storage: StorageSqlite;
 let scheduler: NodeScheduler;
+let session : Session;
 
 function sortPfxs(pfxs: PfxCluster[], maxLen: number) {
     const matching: PfxCluster[] = [];
@@ -59,22 +63,27 @@ async function buildTree(per_chain: number, limit: number, offset: number = 0) {
     const effectiveBits = Math.ceil(Math.log2(total))
     const pfxLen        = Math.max(effectiveBits - Math.floor(Math.log2(per_chain)), 0);
 
+
+    const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic)
+
     let root: Cell;
     console.log("Effective bits:", effectiveBits);
     console.log("Pfx len:", pfxLen);
     
-    let keepGoing       = true;
+    let keepGoing = true;
 
     let pfxPromise = storage.groupPrefixes(pfxLen, offset, limit);
+    bar.start(total, session.processed);
 
     do {
         const pfxs = await pfxPromise;
         // console.log("Pfxs:", pfxs);
-
         if(pfxs.length > 0) {
+
             offset += limit;
             pfxPromise = storage.groupPrefixes(pfxLen, offset, limit);
 
+            let addrCount = 0;
             for(let i = 0; i < pfxs.length; i++) {
                 const pfx = pfxs[i];
                 const rootPos = await storage.findBranchRoot(pfx.len, pfx.keys[0]);
@@ -93,21 +102,25 @@ async function buildTree(per_chain: number, limit: number, offset: number = 0) {
                     }
                     pfxs[i] = pfx;
                 }
+                addrCount += pfxs[i].keys.length;
             }
 
             await scheduler.add(pfxs);
 
+            session.nextChunk(limit);
+            session.processed += addrCount;
+            bar.update(session.processed);
+            await session.save();
+
             //const sorted = sortPfxs(pfxs, per_chain);
-            console.log("Processing batch...");
         }
         else {
-            console.log("Done!");
             keepGoing = false;
         }
     } while(keepGoing);
 
-    console.log("Final merge...");
     const nextLevel = await scheduler.finalize();
+    bar.stop();
 
     if(nextLevel.length == 2) {
         let leftIdx: number;
@@ -125,15 +138,6 @@ async function buildTree(per_chain: number, limit: number, offset: number = 0) {
     else if(nextLevel.length == 1) {
         const tempRoot = nextLevel[0].cell.beginParse();
         root = forceFork(0b100 << 8, 11, 267, tempRoot.loadRef(), tempRoot.loadRef());
-        /*
-        console.log("Trying to load root...");
-        const fullDict = Dictionary.loadDirect(Dictionary.Keys.Address(), airDropValue, root);
-        console.log(fullDict);
-        for(let key of fullDict.keys()) {
-            console.log(`${key.workChain}:${key.hash.toString('hex')}`);
-        }
-        */
-
     }
     else {
         console.log(nextLevel.length);
@@ -142,6 +146,7 @@ async function buildTree(per_chain: number, limit: number, offset: number = 0) {
         // nextLevel.map(p => console.log(Number(p.pfx).toString(2).padStart(p.len, '0')));
         throw new Error("TODO?");
     }
+
     return root;
 }
 
@@ -155,9 +160,11 @@ function help() {
     console.log(`${__filename} --start <airdrop start> --end <airdrop end> <database_path>`);
 }
 async function run() {
-    const args = arg({
+    let args = arg({
         '--start': String,
         '--end': String,
+        '--resume': String,
+        '--session': String,
         '--per-worker': Number,
         '--parallel': Number,
         '--batch-size': Number,
@@ -165,6 +172,8 @@ async function run() {
         '--help': Boolean,
         '-h': '--help'
     },{stopAtPositional: true});
+
+    let sessionArgs: typeof args | undefined;
 
     if(args._.length == 0) {
         console.log("Database argument required");
@@ -188,7 +197,6 @@ async function run() {
     }
 
 
-
     let airdropStart = Date.parse(args['--start']);
     let airdropEnd   = Date.parse(args['--end']);
 
@@ -198,6 +206,68 @@ async function run() {
     const batchSize = args['--batch-size'] ?? parallel * 32;
 
     if(isMainThread) {
+        if(args['--resume']) {
+            session = await Session.fromFile(args['--resume']);
+            args = session.args as any;
+            console.log("Session loaded:");
+        } else {
+            const defaultPath = args['--session'] ?? 'machine.session';
+            try {
+                session = await Session.fromFile(defaultPath);
+                let keepGoing = true;
+                const res = await inquirer.prompt([{
+                    type: 'expand',
+                    message: `Unfinished session found at ${defaultPath}`,
+                    name: 'overwrite',
+                    choices: [
+                        {
+                            key: 'o',
+                            name: 'Overwrite',
+                            value: 'overwrite',
+                        },
+                        {
+                            key: 'r',
+                            name: 'Resume from session state',
+                            value: 'resume',
+                        },
+                        new inquirer.Separator(),
+                        {
+                            key: 'a',
+                            name: 'Abort',
+                            value: 'abort'
+                        }
+                    ]
+                }]);
+                if(res.overwrite == 'overwrite') {
+                    await session.finish();
+                    console.log("Starting new session");
+                    session = new Session({
+                        args: args,
+                        offset: 0,
+                        path: defaultPath,
+                        data: `${defaultPath}.part`
+                    });
+
+                } else if(res.overwrite == 'abort') {
+                    console.log("Aborting execution...");
+                    return;
+                }
+                else {
+                    console.log("Continuing");
+                }
+            }
+            catch(e) {
+                console.log("Starting new session");
+                session = new Session({
+                    args: args,
+                    offset: 0,
+                    path: defaultPath,
+                    data: `${defaultPath}.part`
+                });
+                await session.save();
+            }
+        }
+
         console.log("Airdrop start:", new Date(airdropStart).toString());
         console.log("Airdrop end:", new Date(airdropEnd).toString());
 
@@ -214,6 +284,7 @@ async function run() {
         scheduler = new NodeScheduler({
             airdrop_start: Math.floor(airdropStart / 1000),
             airdrop_end:   Math.floor(airdropEnd   / 1000),
+            session: session,
             max_parallel: parallel,
             workers,
             storage,
@@ -232,11 +303,12 @@ async function run() {
         */
 
         let rootHash: Buffer;
-        const root = await buildTree(perWorker, batchSize);
+        const root = await buildTree(perWorker, batchSize, session.offset);
         rootHash   = root.hash(0);
         console.log("Root hash:", rootHash.toString('hex'));
         console.log("Saving to root_hash");
         await writeFile('root_hash', rootHash.toString('hex') + "\n", {encoding: 'utf8'});
+        await session.finish();
     }
     else {
         if(parentPort == null) {
@@ -271,9 +343,15 @@ async function run() {
                                             cell: r.cell.toBoc().toString('base64')
                                         }
                                     })
-                                });                               resolve(res);
+                                });
+                                resolve(res);
                             } catch(e) {
+                                parentPort?.postMessage({
+                                    type: 'error',
+                                    error: e
+                                });
                                 console.log("Error:", e);
+                                keepGoing = false;
                                 reject(e);
                             }
                         }
