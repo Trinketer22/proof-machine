@@ -1,8 +1,8 @@
-import { NodeProcessor, PfxProcessed, ProcessorConfig} from './NodeProcessor';
+import { NodeProcessor, PfxProcessed, PfxProcessedSerialized, ProcessorConfig} from './NodeProcessor';
 import { Cell } from '@ton/core';
-import { forceFork, readAllPrefixes } from './Dictionary';
+import { readAllPrefixes } from './Dictionary';
 import { PfxCluster, StorageSqlite } from './BranchStorage';
-import { convertToPrunedBranch, joinSuffixes } from './util';
+import { joinSuffixes } from './util';
 import { Worker } from 'node:worker_threads';
 import { Session } from './Session';
 import { readFile } from 'node:fs/promises';
