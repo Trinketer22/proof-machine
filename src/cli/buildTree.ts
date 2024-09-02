@@ -153,6 +153,8 @@ async function buildTree(per_chain: number, limit: number, offset: number = 0) {
 function help() {
     console.log("--per-worker [Apprximate amount of forks processed at a time] default:(1000)");
     console.log(`--parallel [force number of threads]`);
+    console.log("--session [path where to save session files]");
+    console.log("--resume [path to resume session from]");
     console.log("--batch-size' [size of the query results batch. Should be power of 2] default:(32 * parallel)");
     console.log("--cache-bits' [Up to that <= prefix length, each branch hash/depth is stored in db] default:(16)");
     console.log("--help, -h get this message\n\n");
@@ -209,12 +211,10 @@ async function run() {
         if(args['--resume']) {
             session = await Session.fromFile(args['--resume']);
             args = session.args as any;
-            console.log("Session loaded:");
         } else {
             const defaultPath = args['--session'] ?? 'machine.session';
             try {
                 session = await Session.fromFile(defaultPath);
-                let keepGoing = true;
                 const res = await inquirer.prompt([{
                     type: 'expand',
                     message: `Unfinished session found at ${defaultPath}`,
