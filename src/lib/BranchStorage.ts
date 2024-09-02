@@ -205,7 +205,7 @@ export class StorageSqlite {
                 timeout: setTimeout(() => {
                 this.branchTimeout!.cleared = true;
                 if(!this.branchCacheLocked) {
-                    console.log("Clearing branches by timeout");
+                    // console.log("Clearing branches by timeout");
                     this.saveBranchCache();
                 }
                }, 2000),
@@ -259,9 +259,11 @@ export class StorageSqlite {
         });
     }
     updatePath(pfxs: number[], pfxLen: number, path: number[]) {
+        /*
         console.log("PfxLen:", pfxLen);
         console.log("PFXS:", pfxs);
         console.log(path);
+        */
         const concat = "UPDATE `tops` SET `path` = concat_ws(',', ?, `path`) WHERE (`prefix` >> ((`prefix` & 31) - ? + 5)) IN(" + new Array(pfxs.length).fill('?').join(',') + ')';
         return new Promise((resolve, reject) => {
             this.db.run(concat, [path.join(','), pfxLen, ...pfxs], (err) => {

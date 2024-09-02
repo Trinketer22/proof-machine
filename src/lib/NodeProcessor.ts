@@ -24,6 +24,9 @@ export type PfxProcessed = {
     len: number,
     cell: Cell
 }
+export type PfxProcessedSerialized = PfxProcessed & {
+    cell: string
+}
 
 export type ProcessorConfig = {
     airdrop_start: number,
@@ -100,13 +103,6 @@ export class NodeProcessor extends events.EventEmitter {
         */
 
         return results;
-    }
-
-    async finalize() {
-        if(this.results.length > 2) {
-            this.results = await this.joinResults(this.results);
-        }
-        return this.results;
     }
 
     protected async saveBranch(pfx: number | bigint, pfxLength: number, depth: number, hash: Buffer) {
