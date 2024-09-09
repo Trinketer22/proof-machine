@@ -94,10 +94,9 @@ async function run () {
 
         const perWorker = Math.floor(topBatch.length / parallel);
 
-
         const saveProofs = async (tops: TopProcessed) => {
             processed += tops.value.length;
-            await fh.appendFile(tops.value.map(p => '0:' + p[0].toString(16) + "," + p[1]).join("\n") + "\n",{encoding: 'utf8'});
+            await fh.appendFile(tops.value.map(p => '0:' + p[0].toString(16).padStart(64, '0') + "," + p[1]).join("\n") + "\n",{encoding: 'utf8'});
             bar.update(processed);
         }
 
