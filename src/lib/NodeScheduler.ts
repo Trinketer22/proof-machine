@@ -147,8 +147,9 @@ export class NodeScheduler extends NodeProcessor{
             batchCount++;
         }
 
+        let resSerialized = results.map(r => this.serializeProcessed(r));
         if(results.length > 2) {
-            results = await this.joinResults(results);
+            results = (await this.joinResults(resSerialized)).map(r => this.deserializeProcessed(r));
         }
 
         await this.session.addData(results);
@@ -173,15 +174,10 @@ export class NodeScheduler extends NodeProcessor{
         if(!dataFile) {
             throw new Error("No data file to save");
         }
-        let chunk: PfxProcessed[] = [];
-        let tail: PfxProcessed[]  = [];
+        let chunk: PfxProcessedSerialized[] = [];
+        let tail: PfxProcessedSerialized[]  = [];
         for await(let dataLine of dataFile.readLines()) {
-            const res = (JSON.parse(dataLine) as PfxProcessedSerialized[]).map(k => {
-                return {
-                    ...k,
-                    cell: Cell.fromBase64(k.cell)
-                };
-            });
+            const res = JSON.parse(dataLine) as PfxProcessedSerialized[]
             chunk.push(...res);
             if(chunk.length % 8 == 0) {
                 console.log("Joining chunk");

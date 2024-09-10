@@ -24,7 +24,9 @@ export type PfxProcessed = {
     len: number,
     cell: Cell
 }
-export type PfxProcessedSerialized = PfxProcessed & {
+export type PfxProcessedSerialized = {
+    pfx: number | bigint,
+    len: number,
     cell: string
 }
 
@@ -144,9 +146,21 @@ export class NodeProcessor extends events.EventEmitter {
         });
     }
 
-    async joinResults(results: PfxProcessed[], depth: number = 0, paths: number[] = []): Promise<PfxProcessed[]> {
-        const nextLevel: PfxProcessed[] = [];
-        let resLevel: PfxProcessed[];
+    protected deserializeProcessed(data:  PfxProcessedSerialized): PfxProcessed {
+        return {
+            ...data,
+            cell: Cell.fromBase64(data.cell)
+        }
+    }
+    protected serializeProcessed(data: PfxProcessed) : PfxProcessedSerialized {
+        return {
+            ...data,
+            cell: data.cell.toBoc().toString('base64')
+        }
+    }
+    async joinResults(results: PfxProcessedSerialized[], depth: number = 0, paths: number[] = []): Promise<PfxProcessedSerialized[]> {
+        const nextLevel: PfxProcessedSerialized[] = [];
+        let resLevel: PfxProcessedSerialized[];
         const prevSet = [...results];
         let resultLeft = results.length;
         let matchCount = 0;
@@ -169,14 +183,14 @@ export class NodeProcessor extends events.EventEmitter {
                         const fork: Cell[] = new Array(2);
                         const isRight = pfxA % 2;
 
-                        fork[isRight]     = prevSet[i].cell;
-                        fork[isRight ^ 1] = prevSet[k].cell;
+                        fork[isRight]     = this.deserializeProcessed(prevSet[i]).cell;
+                        fork[isRight ^ 1] = this.deserializeProcessed(prevSet[k]).cell;
                         const forkCell    = forceFork(0, 0, prevSet[i].len - 1,fork[0], fork[1]);
                         const nextPfx     = pfxA >> 1;
                         nextLevel.push({
                             pfx: nextPfx,
                             len: prevSet[i].len - 1,
-                            cell: forkCell // convertToPrunedBranch(forkCell.hash(0), forkCell.depth(0))
+                            cell: forkCell.toBoc().toString('base64') // convertToPrunedBranch(forkCell.hash(0), forkCell.depth(0))
                         });
                         if(prevSet[i].len - 1 < this.store_depth) {
                             this.saveBranch(nextPfx, prevSet[i].len - 1, forkCell.depth(0), forkCell.hash(0));

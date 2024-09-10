@@ -133,10 +133,10 @@ async function buildTree(per_chain: number, limit: number, offset: number = 0) {
             leftIdx  = 1;
             rightIdx = 0;
         }
-        root = forceFork(0b100 << 8, 11, 267, nextLevel[leftIdx].cell, nextLevel[rightIdx].cell);
+        root = forceFork(0b100 << 8, 11, 267, Cell.fromBase64(nextLevel[leftIdx].cell), Cell.fromBase64(nextLevel[rightIdx].cell));
     }
     else if(nextLevel.length == 1) {
-        const tempRoot = nextLevel[0].cell.beginParse();
+        const tempRoot = Cell.fromBase64(nextLevel[0].cell).beginParse();
         root = forceFork(0b100 << 8, 11, 267, tempRoot.loadRef(), tempRoot.loadRef());
     }
     else {
