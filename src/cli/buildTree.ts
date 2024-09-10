@@ -307,6 +307,7 @@ async function run() {
         rootHash   = root.hash(0);
         console.log("Root hash:", rootHash.toString('hex'));
         console.log("Saving to root_hash");
+        await writeFile('boc.raw', root.toBoc());
         await writeFile('root_hash', rootHash.toString('hex') + "\n", {encoding: 'utf8'});
         await session.finish();
     }
