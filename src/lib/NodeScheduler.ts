@@ -173,15 +173,16 @@ export class NodeScheduler extends NodeProcessor{
         if(!dataFile) {
             throw new Error("No data file to save");
         }
-        const dataLeft = (await dataFile.readFile({encoding: 'utf8'})).trimEnd();
-        const tail     = dataLeft.split("\n").flatMap(d => {
-            return (JSON.parse(d) as PfxProcessedSerialized[]).map(k => {
+        let tail: PfxProcessed[] = [];
+        for await(let dataLine of dataFile.readLines()) {
+            const res = (JSON.parse(dataLine) as PfxProcessedSerialized[]).map(k => {
                 return {
                     ...k,
                     cell: Cell.fromBase64(k.cell)
                 };
             });
-        });
+            tail.push(...res);
+        }
         const res  = await this.joinResults(tail);
         this.workers.forEach(w => w.postMessage({type: 'no_more_data'}));
         return res;
