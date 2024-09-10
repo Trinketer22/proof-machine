@@ -73,22 +73,22 @@ export class NodeProcessor extends events.EventEmitter {
         this.results      = [];
     }
 
-    add(pfxs: PfxCluster[]) {
+    add(pfxs: PfxCluster[], options: ProcessPfxOptions) {
         this.queue.push(...pfxs);
         if(this.runningBatch.length == 0 || this.running == undefined) {
-            this.running = this.run();
+            this.running = this.run(options);
         }
         return this.running;
     }
 
-    protected async run() {
+    protected async run(options?: ProcessPfxOptions) {
         // MEH Deal with the propper runner when everying is smooth
         let results: PfxProcessed[] = [];
         let batchCount = 0;
         while(this.queue.length > 0 || this.runningBatch.length > 0) {
             const toProcess = this.queue.length;
             for(let i = 0; i < this.max_parallel && i < toProcess; i++) {
-                this.runningBatch.push(this.processPfx(this.queue.shift()!))
+                this.runningBatch.push(this.processPfx(this.queue.shift()!, options))
             }
             const batchRes = await Promise.all(this.runningBatch);
             results.push(...batchRes);
@@ -176,7 +176,7 @@ export class NodeProcessor extends events.EventEmitter {
                         nextLevel.push({
                             pfx: nextPfx,
                             len: prevSet[i].len - 1,
-                            cell: convertToPrunedBranch(forkCell.hash(0), forkCell.depth(0))
+                            cell: forkCell // convertToPrunedBranch(forkCell.hash(0), forkCell.depth(0))
                         });
                         if(prevSet[i].len - 1 < this.store_depth) {
                             this.saveBranch(nextPfx, prevSet[i].len - 1, forkCell.depth(0), forkCell.hash(0));

@@ -334,7 +334,11 @@ async function run() {
                                 });
                             });
                             try { 
-                                const res = await processor.add(msg.pfx);
+                                const res = await processor.add(msg.pfx, {
+                                    pruned: false,
+                                    check_cache: false,
+                                    save_path: true
+                                });
                                 parentPort!.postMessage({
                                     type: 'processed',
                                     pfx: res.map(r => {
