@@ -173,7 +173,8 @@ export class NodeScheduler extends NodeProcessor{
         if(!dataFile) {
             throw new Error("No data file to save");
         }
-        let tail: PfxProcessed[] = [];
+        let chunk: PfxProcessed[] = [];
+        let tail: PfxProcessed[]  = [];
         for await(let dataLine of dataFile.readLines()) {
             const res = (JSON.parse(dataLine) as PfxProcessedSerialized[]).map(k => {
                 return {
@@ -181,9 +182,17 @@ export class NodeScheduler extends NodeProcessor{
                     cell: Cell.fromBase64(k.cell)
                 };
             });
-            tail.push(...res);
+            chunk.push(...res);
+            if(chunk.length % 8 == 0) {
+                console.log("Joining chunk");
+                tail.push(...await this.joinResults(chunk));
+                console.log("Joined successfully");
+                chunk = [];
+            }
         }
+        console.log(`Final join ${tail.length} prefixes...`);
         const res  = await this.joinResults(tail);
+        console.log("Success!");
         this.workers.forEach(w => w.postMessage({type: 'no_more_data'}));
         return res;
     }
