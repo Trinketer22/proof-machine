@@ -69,16 +69,17 @@ export function storeLabel(label: number | bigint, labelLen: number, keyLen: num
         let minLength  = Math.min(shortLen, longLen);
 
         if(isSame(label, labelLen)) {
-            minLength  = Math.min(minLength, labelShortLength(labelLen));
+            const k = 32 - Math.clz32(keyLen);
+            if(labelLen > 1 && k < 2 * labelLen - 1) {
+                builder.store(storeSame(Number(isOdd(label)), labelLen, keyLen));
+                return;
+            }
         }
         if(minLength == shortLen) {
             builder.store(storeShort(label, labelLen));
         }
         else if(minLength == longLen) {
             builder.store(storeLong(label, labelLen, keyLen));
-        }
-        else {
-            builder.store(storeSame(Number(label) % 2, labelLen, keyLen));
         }
     }
 }
