@@ -71,7 +71,7 @@ export function storeLabel(label: number | bigint, labelLen: number, keyLen: num
         if(isSame(label, labelLen)) {
             const k = 32 - Math.clz32(keyLen);
             if(labelLen > 1 && k < 2 * labelLen - 1) {
-                builder.store(storeSame(Number(isOdd(label)), labelLen, keyLen));
+                builder.store(storeSame(Number(!isOdd(label)), labelLen, keyLen));
                 return;
             }
         }
