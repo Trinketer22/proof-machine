@@ -98,6 +98,35 @@ export class StorageSqlite {
             });
         })
     }
+    createKeyIndex(...keyLen: number[]) {
+        if(keyLen.length == 0) {
+            throw new Error("Requires at least one key length to index");
+        }
+        let idxName: string;
+
+        let idxStr = `key >> ${32 - keyLen[0]}`;
+        for(let i = 1; i < keyLen.length; i++) {
+            idxStr += `,key >> ${32 - keyLen[i]}`;
+        }
+
+        if(keyLen.length > 1) {
+            idxName = `key_${keyLen.join('-')}`;
+        }
+        else {
+            idxName = `key_${keyLen[0]}`;
+        }
+        const query = `CREATE INDEX IF NOT EXISTS \`${idxName}\` ON \`airdrop\` (${idxStr})`;
+        return new Promise((resolve, reject) => {
+            this.db.run(query, (err) => {
+                if(err) {
+                    reject(err);
+                }
+                else {
+                    resolve(true);
+                }
+            });
+        });
+    }
 
     isBranchRoot(keyLen: number, key: number) {
         return new Promise((resolve: (value: boolean) => void, reject) => {
