@@ -30,11 +30,11 @@ function isSame(bits: number | bigint, len: number) {
 }
 //
 
-function storeSame(bit: number, labelLen: number | bigint, keyLen: number) {
+function storeSame(bit: number, labelLen: number | bigint, keyLen: number, storeLen?: number) {
     return (builder: Builder) => {
         builder.storeUint(0b11, 2)
                .storeBit(bit)
-               .storeUint(labelLen, Math.ceil(Math.log2(keyLen + 1)))
+               .storeUint(labelLen, storeLen ?? Math.ceil(Math.log2(keyLen + 1)))
     }
 }
 
@@ -52,9 +52,9 @@ function storeShort(label: number | bigint, labelLen: number) {
     }
 }
 
-function storeLong(label: number | bigint, labelLen: number, keyLength: number) {
+function storeLong(label: number | bigint, labelLen: number, keyLength: number, storeLen?: number) {
     return (builder: Builder) => {
-        const length = Math.ceil(Math.log2(keyLength + 1));
+        const length = storeLen ?? Math.ceil(Math.log2(keyLength + 1));
 
         builder.storeUint(0b10, 2)
                .storeUint(labelLen, length)
@@ -64,22 +64,19 @@ function storeLong(label: number | bigint, labelLen: number, keyLength: number) 
 
 export function storeLabel(label: number | bigint, labelLen: number, keyLen: number) {
     return (builder: Builder) => {
-        const shortLen = labelShortLength(labelLen);
-        const longLen  = labelLongLength(labelLen, keyLen);
-        let minLength  = Math.min(shortLen, longLen);
 
+        const k = 32 - Math.clz32(keyLen);
         if(isSame(label, labelLen)) {
-            const k = 32 - Math.clz32(keyLen);
             if(labelLen > 1 && k < 2 * labelLen - 1) {
                 builder.store(storeSame(Number(!isOdd(label)), labelLen, keyLen));
                 return;
             }
         }
-        if(minLength == shortLen) {
-            builder.store(storeShort(label, labelLen));
+        if(k < labelLen) {
+            builder.store(storeLong(label, labelLen, keyLen, k));
         }
-        else if(minLength == longLen) {
-            builder.store(storeLong(label, labelLen, keyLen));
+        else {
+            builder.store(storeShort(label, labelLen));
         }
     }
 }
