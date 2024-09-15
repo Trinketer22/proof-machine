@@ -63,12 +63,14 @@ async function buildTree(per_chain: number, limit: number, offset: number = 0) {
     const effectiveBits = Math.ceil(Math.log2(total))
     const pfxLen        = Math.max(effectiveBits - Math.floor(Math.log2(per_chain)), 0);
 
-
     const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic)
 
     let root: Cell;
     console.log("Effective bits:", effectiveBits);
     console.log("Pfx len:", pfxLen);
+    console.log("Creating index...");
+    await storage.createKeyIndex(pfxLen);
+    console.log("Done!");
     
     let keepGoing = true;
 
