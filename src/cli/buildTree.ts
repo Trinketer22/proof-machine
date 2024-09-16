@@ -6,7 +6,7 @@ import { forceFork } from '../lib/Dictionary';
 import { writeFile } from 'node:fs/promises';
 import arg from 'arg';
 import { availableParallelism } from 'node:os';
-import { isMainThread, parentPort } from 'node:worker_threads';
+import { isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { getN } from '../lib/util';
 import { NodeScheduler, WorkerMessage } from '../lib/NodeScheduler';
 import { Worker } from 'node:worker_threads';
@@ -179,8 +179,6 @@ async function run() {
         '-h': '--help'
     },{stopAtPositional: true});
 
-    let sessionArgs: typeof args | undefined;
-
     if(args._.length == 0) {
         console.log("Database argument required");
         help();
@@ -191,25 +189,6 @@ async function run() {
         help();
         return;
     }
-    if(!args['--start']) {
-        console.log("--start is an required argument");
-        help();
-        return;
-    }
-    if(!args['--end']) {
-        console.log("--end is an required argument");
-        help();
-        return;
-    }
-
-
-    let airdropStart = Date.parse(args['--start']);
-    let airdropEnd   = Date.parse(args['--end']);
-
-    const perWorker = args['--per-worker'] ?? 1000;
-    const storeBits = args['--cache-bits'] ?? 16;
-    const parallel  = args['--parallel'] ?? availableParallelism();
-    const batchSize = args['--batch-size'] ?? parallel * 32;
 
     if(isMainThread) {
 
@@ -222,6 +201,7 @@ async function run() {
             const defaultPath = args['--session'] ?? 'machine.session';
             try {
                 session = await Session.fromFile(defaultPath);
+                console.log(`Session with arguments:${JSON.stringify(session.args, null, 2)} found!`);
                 const res = await inquirer.prompt([{
                     type: 'expand',
                     message: `Unfinished session found at ${defaultPath}`,
@@ -261,6 +241,7 @@ async function run() {
                 }
                 else {
                     console.log("Continuing");
+                    args = session.args as any;
                 }
             }
             catch(e) {
@@ -274,6 +255,25 @@ async function run() {
                 await session.save();
             }
         }
+        if(!args['--start']) {
+            console.log("--start is an required argument");
+            help();
+            return;
+        }
+        if(!args['--end']) {
+            console.log("--end is an required argument");
+            help();
+            return;
+        }
+
+        let airdropStart = Date.parse(args['--start']);
+        let airdropEnd   = Date.parse(args['--end']);
+
+        const perWorker = args['--per-worker'] ?? 1000;
+        const storeBits = args['--cache-bits'] ?? 16;
+        const parallel  = args['--parallel'] ?? availableParallelism();
+        const batchSize = args['--batch-size'] ?? parallel * 32;
+
 
         console.log("Airdrop start:", new Date(airdropStart).toString());
         console.log("Airdrop end:", new Date(airdropEnd).toString());
@@ -286,7 +286,11 @@ async function run() {
 
         storage   = new StorageSqlite(args._[0], { temp_in_memory: tempCache });
         for(let i = 0; i < parallel; i++) {
-            workers[i] = new Worker(__filename, {argv: process.argv.slice(2)});
+            workers[i] = new Worker(__filename, {argv: process.argv.slice(2), workerData: {
+                storeBits,
+                airdropStart,
+                airdropEnd
+            }});
         }
         scheduler = new NodeScheduler({
             airdrop_start: Math.floor(airdropStart / 1000),
@@ -322,11 +326,11 @@ async function run() {
             throw new Error("Parent port is null");
         }
         const processor = new NodeProcessor({
-            airdrop_start: Math.floor(airdropStart / 1000),
-            airdrop_end: Math.floor(airdropEnd / 1000),
+            airdrop_start: Math.floor(workerData.airdropStart / 1000),
+            airdrop_end: Math.floor(workerData.airdropEnd / 1000),
             max_parallel: 1,
             parentPort,
-            store_depth: storeBits
+            store_depth: workerData.storeBits
         });
 
         let keepGoing = true;
