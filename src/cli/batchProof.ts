@@ -51,7 +51,7 @@ async function run () {
         help();
         return;
     }
-    const storage   = new StorageSqlite(args._[0]);
+    const storage   = new StorageSqlite(args._[0], {temp_in_memory: false});
 
     const processor = new NodeProcessor({
         airdrop_start: 1000,

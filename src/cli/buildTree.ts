@@ -156,6 +156,7 @@ function help() {
     console.log("--per-worker [Apprximate amount of forks processed at a time] default:(1000)");
     console.log(`--parallel [force number of threads]`);
     console.log("--session [path where to save session files]");
+    console.log("--temp-cache If specified, all temporary structures of DB go to memory. (For slow storage systems)");
     console.log("--resume [path to resume session from]");
     console.log("--batch-size' [size of the query results batch. Should be power of 2] default:(32 * parallel)");
     console.log("--cache-bits' [Up to that <= prefix length, each branch hash/depth is stored in db] default:(16)");
@@ -170,6 +171,7 @@ async function run() {
         '--resume': String,
         '--session': String,
         '--per-worker': Number,
+        '--temp-cache': Boolean,
         '--parallel': Number,
         '--batch-size': Number,
         '--cache-bits': Number,
@@ -210,6 +212,9 @@ async function run() {
     const batchSize = args['--batch-size'] ?? parallel * 32;
 
     if(isMainThread) {
+
+        const tempCache = args['--temp-cache'] ?? false;
+
         if(args['--resume']) {
             session = await Session.fromFile(args['--resume']);
             args = session.args as any;
@@ -279,7 +284,7 @@ async function run() {
             throw new Error("Batch size should be power of two!")
         }
 
-        storage   = new StorageSqlite(args._[0]);
+        storage   = new StorageSqlite(args._[0], { temp_in_memory: tempCache });
         for(let i = 0; i < parallel; i++) {
             workers[i] = new Worker(__filename, {argv: process.argv.slice(2)});
         }

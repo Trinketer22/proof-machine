@@ -18,6 +18,10 @@ type CacheTimer = {
     timeout: NodeJS.Timeout,
     cleared: boolean
 }
+type DbOptions = {
+    temp_in_memory: boolean,
+    mmap_size?: Number
+}
 
 export class StorageSqlite {
     protected db: sqlite3.Database;
@@ -44,7 +48,7 @@ export class StorageSqlite {
         pfxs: number[]
     }[]
 
-    constructor(path: string) {
+    constructor(path: string, options: DbOptions) {
         this.db = new sqlite3.Database(path);
         this.rootCache = new Map<string, boolean> ();
         this.branchCacheLocked = false;
@@ -54,7 +58,9 @@ export class StorageSqlite {
         this.topCacheLocked = false;
         this.db.run("pragma journal_mode = WAL");
         this.db.run("pragma synchronous  = normal");
-        this.db.run("pragma temp_store = memory");
+        if(options.temp_in_memory) {
+            this.db.run("pragma temp_store = memory");
+        }
         // this.db.run("pragma mmap_size = 8000000000");
         // this.db.on('trace', (sql) => console.log("Run:", sql));
     }

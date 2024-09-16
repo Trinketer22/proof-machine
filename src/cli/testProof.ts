@@ -36,7 +36,7 @@ async function run() {
 
     const rootHash = Buffer.from(args['--root-hash'], 'hex');
     const testAddress = Address.parse(args._[0]);
-    const storage = new StorageSqlite(args['--database']);
+    const storage = new StorageSqlite(args['--database'], {temp_in_memory: false});
     const processor = new NodeProcessor({
         store_depth: 16,
         airdrop_start: 1000,
