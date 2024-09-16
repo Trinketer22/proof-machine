@@ -6,7 +6,7 @@ import { forceFork } from '../lib/Dictionary';
 import { writeFile } from 'node:fs/promises';
 import arg from 'arg';
 import { availableParallelism } from 'node:os';
-import { isMainThread, parentPort } from 'node:worker_threads';
+import { isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { getN } from '../lib/util';
 import { NodeScheduler, WorkerMessage } from '../lib/NodeScheduler';
 import { Worker } from 'node:worker_threads';
@@ -63,12 +63,14 @@ async function buildTree(per_chain: number, limit: number, offset: number = 0) {
     const effectiveBits = Math.ceil(Math.log2(total))
     const pfxLen        = Math.max(effectiveBits - Math.floor(Math.log2(per_chain)), 0);
 
-
     const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic)
 
     let root: Cell;
     console.log("Effective bits:", effectiveBits);
     console.log("Pfx len:", pfxLen);
+    console.log("Creating index...");
+    await storage.createKeyIndex(pfxLen);
+    console.log("Done!");
     
     let keepGoing = true;
 
@@ -154,6 +156,7 @@ function help() {
     console.log("--per-worker [Apprximate amount of forks processed at a time] default:(1000)");
     console.log(`--parallel [force number of threads]`);
     console.log("--session [path where to save session files]");
+    console.log("--temp-cache If specified, all temporary structures of DB go to memory. (For slow storage systems)");
     console.log("--resume [path to resume session from]");
     console.log("--batch-size' [size of the query results batch. Should be power of 2] default:(32 * parallel)");
     console.log("--cache-bits' [Up to that <= prefix length, each branch hash/depth is stored in db] default:(16)");
@@ -168,14 +171,13 @@ async function run() {
         '--resume': String,
         '--session': String,
         '--per-worker': Number,
+        '--temp-cache': Boolean,
         '--parallel': Number,
         '--batch-size': Number,
         '--cache-bits': Number,
         '--help': Boolean,
         '-h': '--help'
     },{stopAtPositional: true});
-
-    let sessionArgs: typeof args | undefined;
 
     if(args._.length == 0) {
         console.log("Database argument required");
@@ -187,27 +189,11 @@ async function run() {
         help();
         return;
     }
-    if(!args['--start']) {
-        console.log("--start is an required argument");
-        help();
-        return;
-    }
-    if(!args['--end']) {
-        console.log("--end is an required argument");
-        help();
-        return;
-    }
-
-
-    let airdropStart = Date.parse(args['--start']);
-    let airdropEnd   = Date.parse(args['--end']);
-
-    const perWorker = args['--per-worker'] ?? 1000;
-    const storeBits = args['--cache-bits'] ?? 16;
-    const parallel  = args['--parallel'] ?? availableParallelism();
-    const batchSize = args['--batch-size'] ?? parallel * 32;
 
     if(isMainThread) {
+
+        const tempCache = args['--temp-cache'] ?? false;
+
         if(args['--resume']) {
             session = await Session.fromFile(args['--resume']);
             args = session.args as any;
@@ -215,6 +201,7 @@ async function run() {
             const defaultPath = args['--session'] ?? 'machine.session';
             try {
                 session = await Session.fromFile(defaultPath);
+                console.log(`Session with arguments:${JSON.stringify(session.args, null, 2)} found!`);
                 const res = await inquirer.prompt([{
                     type: 'expand',
                     message: `Unfinished session found at ${defaultPath}`,
@@ -254,6 +241,7 @@ async function run() {
                 }
                 else {
                     console.log("Continuing");
+                    args = session.args as any;
                 }
             }
             catch(e) {
@@ -267,6 +255,25 @@ async function run() {
                 await session.save();
             }
         }
+        if(!args['--start']) {
+            console.log("--start is an required argument");
+            help();
+            return;
+        }
+        if(!args['--end']) {
+            console.log("--end is an required argument");
+            help();
+            return;
+        }
+
+        let airdropStart = Date.parse(args['--start']);
+        let airdropEnd   = Date.parse(args['--end']);
+
+        const perWorker = args['--per-worker'] ?? 1000;
+        const storeBits = args['--cache-bits'] ?? 16;
+        const parallel  = args['--parallel'] ?? availableParallelism();
+        const batchSize = args['--batch-size'] ?? parallel * 32;
+
 
         console.log("Airdrop start:", new Date(airdropStart).toString());
         console.log("Airdrop end:", new Date(airdropEnd).toString());
@@ -277,9 +284,13 @@ async function run() {
             throw new Error("Batch size should be power of two!")
         }
 
-        storage   = new StorageSqlite(args._[0]);
+        storage   = new StorageSqlite(args._[0], { temp_in_memory: tempCache });
         for(let i = 0; i < parallel; i++) {
-            workers[i] = new Worker(__filename, {argv: process.argv.slice(2)});
+            workers[i] = new Worker(__filename, {argv: process.argv.slice(2), workerData: {
+                storeBits,
+                airdropStart,
+                airdropEnd
+            }});
         }
         scheduler = new NodeScheduler({
             airdrop_start: Math.floor(airdropStart / 1000),
@@ -315,11 +326,11 @@ async function run() {
             throw new Error("Parent port is null");
         }
         const processor = new NodeProcessor({
-            airdrop_start: Math.floor(airdropStart / 1000),
-            airdrop_end: Math.floor(airdropEnd / 1000),
+            airdrop_start: Math.floor(workerData.airdropStart / 1000),
+            airdrop_end: Math.floor(workerData.airdropEnd / 1000),
             max_parallel: 1,
             parentPort,
-            store_depth: storeBits
+            store_depth: workerData.storeBits
         });
 
         let keepGoing = true;

@@ -18,6 +18,10 @@ type CacheTimer = {
     timeout: NodeJS.Timeout,
     cleared: boolean
 }
+type DbOptions = {
+    temp_in_memory: boolean,
+    mmap_size?: Number
+}
 
 export class StorageSqlite {
     protected db: sqlite3.Database;
@@ -44,7 +48,7 @@ export class StorageSqlite {
         pfxs: number[]
     }[]
 
-    constructor(path: string) {
+    constructor(path: string, options: DbOptions) {
         this.db = new sqlite3.Database(path);
         this.rootCache = new Map<string, boolean> ();
         this.branchCacheLocked = false;
@@ -54,7 +58,9 @@ export class StorageSqlite {
         this.topCacheLocked = false;
         this.db.run("pragma journal_mode = WAL");
         this.db.run("pragma synchronous  = normal");
-        this.db.run("pragma temp_store = memory");
+        if(options.temp_in_memory) {
+            this.db.run("pragma temp_store = memory");
+        }
         // this.db.run("pragma mmap_size = 8000000000");
         // this.db.on('trace', (sql) => console.log("Run:", sql));
     }
@@ -97,6 +103,35 @@ export class StorageSqlite {
                 resolve(pfxChunk);
             });
         })
+    }
+    createKeyIndex(...keyLen: number[]) {
+        if(keyLen.length == 0) {
+            throw new Error("Requires at least one key length to index");
+        }
+        let idxName: string;
+
+        let idxStr = `key >> ${32 - keyLen[0]}`;
+        for(let i = 1; i < keyLen.length; i++) {
+            idxStr += `,key >> ${32 - keyLen[i]}`;
+        }
+
+        if(keyLen.length > 1) {
+            idxName = `key_${keyLen.join('-')}`;
+        }
+        else {
+            idxName = `key_${keyLen[0]}`;
+        }
+        const query = `CREATE INDEX IF NOT EXISTS \`${idxName}\` ON \`airdrop\` (${idxStr})`;
+        return new Promise((resolve, reject) => {
+            this.db.run(query, (err) => {
+                if(err) {
+                    reject(err);
+                }
+                else {
+                    resolve(true);
+                }
+            });
+        });
     }
 
     isBranchRoot(keyLen: number, key: number) {
