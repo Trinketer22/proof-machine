@@ -92,7 +92,8 @@ async function run () {
 
         const workers: Worker[] = Array(parallel); 
 
-        const perWorker = Math.floor(topBatch.length / parallel);
+        const perWorker = Math.max(Math.floor(topBatch.length / parallel), 1);
+        console.log("Per worker:", perWorker);
 
         const saveProofs = async (tops: TopProcessed) => {
             processed += tops.value.length;
