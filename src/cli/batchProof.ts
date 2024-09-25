@@ -88,12 +88,13 @@ async function run () {
         let   processed = 0;
         const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic)
 
-        bar.start(total, 0);
 
         const workers: Worker[] = Array(parallel); 
 
-        const perWorker = Math.floor(topBatch.length / parallel);
+        const perWorker = Math.max(Math.floor(topBatch.length / parallel), 1);
+        console.log("Per worker:", perWorker);
 
+        bar.start(total, 0);
         const saveProofs = async (tops: TopProcessed) => {
             processed += tops.value.length;
             await fh.appendFile(tops.value.map(p => '0:' + p[0].toString(16).padStart(64, '0') + "," + p[1]).join("\n") + "\n",{encoding: 'utf8'});

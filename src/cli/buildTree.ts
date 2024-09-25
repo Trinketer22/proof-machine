@@ -17,6 +17,7 @@ import inquirer from 'inquirer';
 let storage: StorageSqlite;
 let scheduler: NodeScheduler;
 let session : Session;
+let total: number;
 
 function sortPfxs(pfxs: PfxCluster[], maxLen: number) {
     const matching: PfxCluster[] = [];
@@ -58,16 +59,11 @@ const airDropValue: DictionaryValue<AirdropData> = {
     }
 }
 
-async function buildTree(per_chain: number, limit: number, offset: number = 0) {
-    const total = await storage.getTotalRecords();
-    const effectiveBits = Math.ceil(Math.log2(total))
-    const pfxLen        = Math.max(effectiveBits - Math.floor(Math.log2(per_chain)), 0);
+async function buildTree(pfxLen: number, limit: number, offset: number = 0) {
 
     const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic)
 
     let root: Cell;
-    console.log("Effective bits:", effectiveBits);
-    console.log("Pfx len:", pfxLen);
     console.log("Creating index...");
     await storage.createKeyIndex(pfxLen);
     console.log("Done!");
@@ -153,7 +149,7 @@ async function buildTree(per_chain: number, limit: number, offset: number = 0) {
 }
 
 function help() {
-    console.log("--per-worker [Apprximate amount of forks processed at a time] default:(1000)");
+    console.log("--per-worker [start bit prefix] default:(10)");
     console.log(`--parallel [force number of threads]`);
     console.log("--session [path where to save session files]");
     console.log("--temp-cache If specified, all temporary structures of DB go to memory. (For slow storage systems)");
@@ -269,14 +265,16 @@ async function run() {
         let airdropStart = Date.parse(args['--start']);
         let airdropEnd   = Date.parse(args['--end']);
 
-        const perWorker = args['--per-worker'] ?? 1000;
-        const storeBits = args['--cache-bits'] ?? 16;
+        const perWorker = args['--per-worker'] ?? 10;
+        let   storeBits = args['--cache-bits'] ?? 16;
         const parallel  = args['--parallel'] ?? availableParallelism();
         const batchSize = args['--batch-size'] ?? parallel * 32;
 
 
         console.log("Airdrop start:", new Date(airdropStart).toString());
+        console.log("Unix:", Math.floor(airdropStart / 1000));
         console.log("Airdrop end:", new Date(airdropEnd).toString());
+        console.log("Unix:", Math.floor(airdropEnd / 1000));
 
         const workers: Worker[] = Array(parallel);
         const batchLog = Math.log2(batchSize);
@@ -285,6 +283,18 @@ async function run() {
         }
 
         storage   = new StorageSqlite(args._[0], { temp_in_memory: tempCache });
+        total     = await storage.getTotalRecords();
+        const effectiveBits = Math.ceil(Math.log2(total))
+        const pfxLen        = Math.max(effectiveBits - perWorker, 1);
+        console.log("Effective bits:", effectiveBits);
+        console.log("Pfx len:", pfxLen);
+
+        if(storeBits > effectiveBits) {
+            storeBits = pfxLen + 1;
+            console.log("Lowering cache bits:", storeBits);
+        }
+
+
         for(let i = 0; i < parallel; i++) {
             workers[i] = new Worker(__filename, {argv: process.argv.slice(2), workerData: {
                 storeBits,
@@ -314,7 +324,7 @@ async function run() {
         */
 
         let rootHash: Buffer;
-        const root = await buildTree(perWorker, batchSize, session.offset);
+        const root = await buildTree(pfxLen, batchSize, session.offset);
         rootHash   = root.hash(0);
         console.log("Root hash:", rootHash.toString('hex'));
         console.log("Saving to root_hash");

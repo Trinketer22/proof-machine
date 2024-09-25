@@ -114,13 +114,22 @@ export class NodeScheduler extends NodeProcessor{
         });
 
         while(this.queue.length > 0 || this.runningBatch.length > 0) {
+            const totalWorkers = this.workers.length;
             let toProcess = this.queue.length;
+            let workers   = this.workers;
+            let perWorker: number;
+            if(toProcess >= totalWorkers) {
+                perWorker = Math.floor(toProcess / totalWorkers);
+            }
+            else {
+                perWorker = 1;
+                workers = this.workers.slice(0, toProcess);
+            }
 
-            const res = this.workers.map(w => new Promise((resolve:(v: PfxProcessed[]) => void, reject) => {
+            const res = workers.map(w => new Promise((resolve:(v: PfxProcessed[]) => void, reject) => {
                 w.once('error', (e) => reject(e));
                 w.on('message', async function processedPfx (msg: WorkerMessage) {
                     if(msg.type == 'processed') {
-                        // console.log("Got processed:", msg);
                         w.removeListener('message', processedPfx);
                         resolve(msg.pfx.map(p => {
                             return {
@@ -131,12 +140,10 @@ export class NodeScheduler extends NodeProcessor{
                     }
                 });
             }));
-            const perWorker = Math.floor(toProcess / this.workers.length);
-            for(let i = 0; i < this.workers.length && i < toProcess; i++) {
+            for(let i = 0; i < workers.length && i < toProcess; i++) {
                 const msgs = this.queue.splice(0, perWorker);
-                toProcess -= msgs.length;
                 // console.log("Posting...:");
-                this.workers[i].postMessage({
+                workers[i].postMessage({
                     type: 'pfx',
                     pfx: msgs
                 });
