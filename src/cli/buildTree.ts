@@ -272,7 +272,9 @@ async function run() {
 
 
         console.log("Airdrop start:", new Date(airdropStart).toString());
+        console.log("Unix:", Math.floor(airdropStart / 1000));
         console.log("Airdrop end:", new Date(airdropEnd).toString());
+        console.log("Unix:", Math.floor(airdropEnd / 1000));
 
         const workers: Worker[] = Array(parallel);
         const batchLog = Math.log2(batchSize);
